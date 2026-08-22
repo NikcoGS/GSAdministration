@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GS Operational System</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛳</text></svg>" />
+</head>
+<body>
+  <!-- ===================== AUTH SCREEN ===================== -->
+  <div id="auth-screen" class="auth-screen hidden">
+    <div class="auth-card">
+      <div class="brand">
+        <span class="brand-mark">⛳</span>
+        <div>
+          <h1 id="brand-title">GS Operational System</h1>
+          <p class="brand-sub">Company operations portal</p>
+        </div>
+      </div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="login">Log in</button>
+        <button class="tab" data-tab="register">Sign up</button>
+      </div>
+
+      <!-- login -->
+      <form id="login-form" class="auth-form">
+        <label>Email
+          <input type="email" name="email" autocomplete="email" required />
+        </label>
+        <label>Password
+          <input type="password" name="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Log in</button>
+      </form>
+
+      <!-- register -->
+      <form id="register-form" class="auth-form hidden">
+        <label>Full name
+          <input type="text" name="full_name" autocomplete="name" required />
+        </label>
+        <label>Email
+          <input type="email" name="email" autocomplete="email" required />
+        </label>
+        <label>Password
+          <input type="password" name="password" autocomplete="new-password" minlength="6" required />
+          <small class="hint">At least 6 characters.</small>
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Create account</button>
+      </form>
+
+      <p id="auth-msg" class="msg"></p>
+    </div>
+  </div>
+
+  <!-- ===================== APP SHELL ===================== -->
+  <div id="app-shell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand small">
+        <span class="brand-mark">⛳</span>
+        <span id="side-title">GS Operational</span>
+      </div>
+      <nav class="nav">
+        <div class="nav-group">Payments</div>
+        <a href="#dashboard"  class="nav-item" data-view="dashboard">📋 My Requests</a>
+        <a href="#new"        class="nav-item" data-view="new">➕ New Payment Request</a>
+        <div class="nav-group">Trip reimbursement</div>
+        <a href="#trips"      class="nav-item" data-view="trips">🚗 My Trip Claims</a>
+        <a href="#newtrip"    class="nav-item" data-view="newtrip">➕ New Trip Claim</a>
+        <div class="nav-group">Petty cash</div>
+        <a href="#petty"      class="nav-item" data-view="petty">🧾 My Petty Cash</a>
+        <a href="#newpetty"   class="nav-item" data-view="newpetty">➕ New Petty Cash</a>
+        <div class="nav-group admin-only">Admin</div>
+        <a href="#admin"      class="nav-item admin-only" data-view="admin">🛡️ Admin Approvals</a>
+        <a href="#disburse"   class="nav-item admin-only" data-view="disburse">💸 Disburse</a>
+        <div class="nav-group">Account</div>
+        <a href="#settings"   class="nav-item" data-view="settings">⚙️ My Settings</a>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="user-chip">
+          <div class="avatar" id="user-avatar">–</div>
+          <div class="user-meta">
+            <div id="user-name">–</div>
+            <div id="user-role" class="role-badge">employee</div>
+          </div>
+        </div>
+        <button id="logout-btn" class="btn btn-ghost btn-block">Log out</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <h2 id="view-title">My Requests</h2>
+        <button class="btn btn-primary" data-view="new" id="topbar-new">➕ New Request</button>
+      </header>
+      <div id="view-root" class="view-root"></div>
+    </main>
+  </div>
+
+  <!-- ===================== MODAL ===================== -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-card" id="modal-card"></div>
+  </div>
+
+  <!-- ===================== TOAST ===================== -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

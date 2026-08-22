@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(/usr/bin/python3 --version)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8777/index.html)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8777/app.js)",
+      "mcp__59c9bf16-079a-4a57-b1e1-ee6bdc813492__search_files"
+    ]
+  }
+}
