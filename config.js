@@ -8,8 +8,8 @@
 // ============================================================================
 
 window.GS_CONFIG = {
-  SUPABASE_URL: "https://zbdnrzwarozemlhtyhwr.supabase.co",
-  SUPABASE_ANON_KEY: "sb_publishable_2uB3KXnO-AcC6icVjDU07w_6DwsgQM1",
+  SUPABASE_URL: "https://wmcpczxncadwvtnzkzbm.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_1eB8nda2e4bgjeBmwO0fog_Q3h_Gj1o",
 
   // Cosmetic
   COMPANY_NAME: "Golf Solutions",
