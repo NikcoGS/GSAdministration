@@ -409,7 +409,12 @@ security definer
 set search_path = public
 as $$
 begin
-  if new.role is distinct from old.role and not public.is_admin() then
+  -- Only police requests coming from app users (auth.uid() present).
+  -- Direct database access (SQL editor / service role) is trusted, so the
+  -- initial admin can be promoted there.
+  if new.role is distinct from old.role
+     and auth.uid() is not null
+     and not public.is_admin() then
     new.role := old.role;   -- silently ignore role changes by non-admins
   end if;
   return new;
