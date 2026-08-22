@@ -172,6 +172,64 @@ textarea { resize: vertical; min-height: 78px; }
 .type-tag.petty { background: #fdf3e0; color: #8a5a12; }
 .paytiny { font-size: 12px; color: var(--muted); }
 .paytiny .rek { color: var(--ink); font-weight: 600; }
+
+/* ===================== Mobile ===================== */
+.menu-btn { display: none; font-size: 18px; padding: 8px 12px; }
+.nav-backdrop { display: none; }
+
+@media (max-width: 820px) {
+  .app-shell { display: block; }
+
+  /* sidebar becomes a slide-in drawer */
+  .sidebar {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: min(280px, 82vw);
+    z-index: 60;
+    transform: translateX(-105%);
+    transition: transform .25s ease;
+    overflow-y: auto;
+    box-shadow: 0 0 40px rgba(0,0,0,.35);
+  }
+  .app-shell.nav-open .sidebar { transform: translateX(0); }
+  .nav-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(14,32,25,.45);
+    z-index: 55;
+  }
+  .app-shell.nav-open .nav-backdrop { display: block; }
+  .menu-btn { display: inline-block; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 40;
+    padding: 10px 14px;
+    gap: 10px;
+  }
+  .topbar h2 { font-size: 16px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar .btn-primary { padding: 8px 12px; font-size: 13px; }
+
+  .view-root { padding: 14px; }
+  .panel { padding: 16px; }
+
+  /* prevent iOS auto-zoom when focusing inputs (needs >=16px font) */
+  input, select, textarea { font-size: 16px; }
+
+  /* comfortable modals on small screens */
+  .modal { padding: 8px; align-items: end; }
+  .modal-card { max-width: none; max-height: 94vh; padding: 18px; border-radius: 14px; }
+  .modal-actions { flex-wrap: wrap; }
+  .modal-actions .btn { flex: 1 1 auto; }
+
+  .toolbar { gap: 6px; }
+  .filter-pill { padding: 6px 11px; font-size: 12px; }
+  .seg { width: 100%; overflow-x: auto; }
+  .seg button { padding: 8px 12px; font-size: 13px; white-space: nowrap; }
+
+  th, td { padding: 10px 10px; }
+  .dg-head { flex-direction: column; align-items: stretch; }
+  .dg-total { text-align: left; }
+  .auth-card { padding: 22px; }
+}
 .nav-item {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; border-radius: 9px;

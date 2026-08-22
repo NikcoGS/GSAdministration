@@ -225,6 +225,13 @@
   });
   window.addEventListener("hashchange", route);
 
+  // mobile drawer
+  const closeNav = () => $("#app-shell").classList.remove("nav-open");
+  $("#menu-btn").addEventListener("click", () => $("#app-shell").classList.toggle("nav-open"));
+  $("#nav-backdrop").addEventListener("click", closeNav);
+  $$(".nav-item").forEach((n) => n.addEventListener("click", closeNav));
+  window.addEventListener("hashchange", closeNav);
+
   function route() {
     if (!state.profile) return;
     let view = (location.hash || "#dashboard").slice(1);
