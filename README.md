@@ -132,6 +132,24 @@ It also fixes a security gap — it stops a user from changing their own role vi
 > Tip: the easiest way to run any migration is to paste the whole **[`setup-all.sql`](setup-all.sql)**
 > (all features, safe to re-run) into the Supabase SQL Editor.
 
+## Feature 5: Item Receiving + Store Movement
+
+**Receiving:** anyone registers incoming goods (PO/invoice number, supplier, site,
+attachment) with free-text item lines, and **assigns a checker**. The checker ticks
+each item off on site (default site: Manhattan), then **confirms**. Confirmed
+receivings produce a printable **Goods Received Report** for Odoo entry.
+
+**Store movement:** anyone lists items + quantities, picks the route
+(Manhattan / Sedayu / Premiere), and assigns someone. The assignee can mark
+**preparing**, then **complete**. Completed movements produce a printable
+**Store Transfer Report** for Odoo entry.
+
+**Admin → 📦 Site Ops Tracking:** admins see every receiving and transfer with
+status filters and one-click 🖨️ report buttons.
+
+**To enable it:** run [`setup-receiving-movement.sql`](setup-receiving-movement.sql)
+once in Supabase (or re-run [`setup-all.sql`](setup-all.sql)).
+
 ---
 
 ## Roadmap (next features)
