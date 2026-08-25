@@ -173,6 +173,27 @@ textarea { resize: vertical; min-height: 78px; }
 .paytiny { font-size: 12px; color: var(--muted); }
 .paytiny .rek { color: var(--ink); font-weight: 600; }
 
+/* item/qty/unit line editor (receiving + movement) */
+.ln3-head, .ln3-row {
+  display: grid;
+  grid-template-columns: 1fr 90px 90px 36px;
+  gap: 10px;
+  align-items: center;
+}
+.ln3-head { padding: 4px 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; margin-top: 8px; }
+.ln3-row { margin-bottom: 8px; }
+
+/* receiving checklist in detail modal */
+.check-line { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; }
+.check-line input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--green-600); flex: none; }
+.check-line .cl-name { flex: 1; font-weight: 600; }
+.check-line .cl-qty { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.check-line.done { background: var(--green-050); border-color: #bfe2cd; }
+.check-line.done .cl-name { text-decoration: line-through; color: var(--green-700); }
+.check-progress { font-size: 13px; font-weight: 700; color: var(--muted); margin: 10px 0 4px; }
+
+@media (max-width: 720px) { .ln3-head { display: none; } .ln3-row { grid-template-columns: 1fr 70px 70px 34px; } }
+
 /* ===================== Mobile ===================== */
 .menu-btn { display: none; font-size: 18px; padding: 8px 12px; }
 .nav-backdrop { display: none; }
@@ -290,6 +311,8 @@ tbody tr:hover { background: #fafcfb; cursor: pointer; }
 .badge.pending  { background: var(--amber-bg); color: var(--amber); }
 .badge.approved { background: var(--green-badge-bg); color: var(--green-badge); }
 .badge.rejected { background: var(--red-bg); color: var(--red); }
+.badge.confirmed, .badge.completed { background: var(--green-badge-bg); color: var(--green-badge); }
+.badge.preparing { background: #e7eefc; color: #274690; }
 
 .empty { text-align: center; color: var(--muted); padding: 48px 20px; }
 .empty .big { font-size: 40px; }

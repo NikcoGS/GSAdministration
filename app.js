@@ -34,7 +34,14 @@
     profile: null,     // { id, full_name, role, ... }
     adminFilter: "pending",
     adminModule: "payment", // "payment" | "trip" | "petty"
+    users: null,            // cached user_directory rows
+    recvFilter: "assigned", // "assigned" | "mine" | "all"
+    movFilter: "assigned",
+    trackModule: "receiving", // admin tracking: "receiving" | "movement"
+    trackFilter: "all",
   };
+
+  const LOCATIONS = ["Manhattan", "Sedayu", "Premiere"];
 
   // Apply cosmetic config
   if (cfg.APP_NAME) {
@@ -235,10 +242,11 @@
   function route() {
     if (!state.profile) return;
     let view = (location.hash || "#dashboard").slice(1);
-    const adminViews = ["admin", "disburse"];
+    const adminViews = ["admin", "disburse", "tracking"];
     if (adminViews.includes(view) && state.profile.role !== "admin") view = "dashboard";
-    if (!["dashboard", "new", "trips", "newtrip", "petty", "newpetty", "admin", "disburse", "settings"].includes(view))
-      view = "dashboard";
+    const allViews = ["dashboard", "new", "trips", "newtrip", "petty", "newpetty",
+      "receiving", "newreceiving", "movements", "newmovement", "admin", "disburse", "tracking", "settings"];
+    if (!allViews.includes(view)) view = "dashboard";
 
     $$(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.view === view));
 
@@ -249,15 +257,26 @@
       newtrip: "New Trip Reimbursement Claim",
       petty: "My Petty Cash",
       newpetty: "New Petty Cash Reimbursement",
+      receiving: "Item Receiving",
+      newreceiving: "New Receiving",
+      movements: "Store Movement",
+      newmovement: "New Store Movement",
       admin: "Admin Approvals",
       disburse: "Disburse",
+      tracking: "Site Ops Tracking",
       settings: "My Settings",
     };
     $("#view-title").textContent = titles[view];
 
     // context-aware top-bar "new" button
     const topNew = $("#topbar-new");
-    const topNewFor = { dashboard: ["➕ New Request", "new"], trips: ["➕ New Trip Claim", "newtrip"], petty: ["➕ New Petty Cash", "newpetty"] };
+    const topNewFor = {
+      dashboard: ["➕ New Request", "new"],
+      trips: ["➕ New Trip Claim", "newtrip"],
+      petty: ["➕ New Petty Cash", "newpetty"],
+      receiving: ["➕ New Receiving", "newreceiving"],
+      movements: ["➕ New Movement", "newmovement"],
+    };
     if (topNewFor[view]) {
       topNew.classList.remove("hidden");
       topNew.textContent = topNewFor[view][0];
@@ -272,8 +291,13 @@
     else if (view === "newtrip") renderNewTrip();
     else if (view === "petty") renderPetty();
     else if (view === "newpetty") renderNewPetty();
+    else if (view === "receiving") renderReceiving();
+    else if (view === "newreceiving") renderNewReceiving();
+    else if (view === "movements") renderMovements();
+    else if (view === "newmovement") renderNewMovement();
     else if (view === "admin") renderAdmin();
     else if (view === "disburse") renderDisburse();
+    else if (view === "tracking") renderTracking();
     else if (view === "settings") renderSettings();
   }
 
@@ -792,6 +816,803 @@
     } finally {
       btn.disabled = false;
     }
+  }
+
+  // ==========================================================================
+  //  Shared: user directory (for assignment dropdowns + names)
+  // ==========================================================================
+  async function loadUsers() {
+    if (state.users) return state.users;
+    const { data, error } = await sb.from("user_directory").select("*").order("full_name");
+    if (error) { toast(error.message, "error"); return []; }
+    state.users = data || [];
+    return state.users;
+  }
+  const userName = (id) => {
+    const u = (state.users || []).find((x) => x.id === id);
+    return u ? u.full_name || u.email : "—";
+  };
+  const assigneeSelect = (nameAttr, required = true) =>
+    `<select name="${nameAttr}" ${required ? "required" : ""}>
+       <option value="" disabled selected>Assign to…</option>
+       ${(state.users || [])
+         .map((u) => `<option value="${u.id}">${esc(u.full_name || u.email)}</option>`)
+         .join("")}
+     </select>`;
+
+  // generic item/qty/unit line editor
+  function addItemLine(container) {
+    const row = el(`
+      <div class="ln3-row">
+        <input type="text" class="ln-item" placeholder="Item name" />
+        <input type="number" class="ln-qty" step="0.01" min="0" placeholder="Qty" />
+        <input type="text" class="ln-unit" placeholder="Unit" />
+        <button type="button" class="ln-del" title="Remove line">✕</button>
+      </div>`);
+    row.querySelector(".ln-del").addEventListener("click", () => row.remove());
+    container.append(row);
+  }
+  function collectItemLines(container, msgEl) {
+    const lines = [];
+    for (const row of $$(".ln3-row", container)) {
+      const item = row.querySelector(".ln-item").value.trim();
+      const qtyRaw = row.querySelector(".ln-qty").value;
+      const unit = row.querySelector(".ln-unit").value.trim();
+      if (!item && !qtyRaw) continue;
+      if (!item) { msgEl.textContent = "Every line needs an item name."; msgEl.className = "msg error"; return null; }
+      const qty = Number(qtyRaw);
+      if (!qty || qty <= 0) { msgEl.textContent = `"${item}" needs a quantity.`; msgEl.className = "msg error"; return null; }
+      lines.push({ item_name: item, qty, unit: unit || null });
+    }
+    if (!lines.length) { msgEl.textContent = "Add at least one item."; msgEl.className = "msg error"; return null; }
+    return lines;
+  }
+
+  const filterPills = (current, options) =>
+    `<div class="toolbar">` +
+    options
+      .map(
+        ([key, label]) =>
+          `<button class="filter-pill ${key === current ? "active" : ""}" data-filter="${key}">${label}</button>`
+      )
+      .join("") +
+    `</div>`;
+
+  // ==========================================================================
+  //  VIEW: RECEIVING (list)
+  // ==========================================================================
+  async function renderReceiving() {
+    const root = $("#view-root");
+    root.innerHTML = '<div class="loading">Loading receiving orders…</div>';
+    await loadUsers();
+
+    const { data, error } = await sb
+      .from("receiving_orders")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) { root.innerHTML = errorBox(error.message); return; }
+
+    const f = state.recvFilter;
+    const rows = (data || []).filter((r) =>
+      f === "assigned" ? r.assigned_to === state.user.id :
+      f === "mine" ? r.created_by === state.user.id : true
+    );
+
+    const pillOpts = [["assigned", "Assigned to me"], ["mine", "Created by me"], ["all", "All"]];
+    let html = filterPills(f, pillOpts);
+
+    if (!rows.length) {
+      html +=
+        '<div class="card panel empty"><div class="big">📥</div><h3>Nothing here</h3>' +
+        '<p class="sub">No receiving orders in this filter.</p>' +
+        '<button class="btn btn-primary" onclick="location.hash=\'#newreceiving\'">➕ New Receiving</button></div>';
+    } else {
+      html += `<div class="card table-wrap"><table>
+        <thead><tr><th>Ref / PO</th><th>Supplier</th><th>Site</th><th>Created by</th><th>Assigned to</th><th>Status</th></tr></thead>
+        <tbody>${rows
+          .map(
+            (r) => `<tr data-id="${r.id}">
+              <td>${esc(r.ref_number || "—")}</td>
+              <td>${esc(r.supplier || "—")}</td>
+              <td>${esc(r.location)}</td>
+              <td>${esc(userName(r.created_by))}</td>
+              <td>${esc(userName(r.assigned_to))}</td>
+              <td><span class="badge ${r.status}">${r.status === "pending" ? "to check" : r.status}</span></td>
+            </tr>`
+          )
+          .join("")}</tbody></table></div>`;
+    }
+    root.innerHTML = html;
+
+    $$(".filter-pill", root).forEach((p) =>
+      p.addEventListener("click", () => { state.recvFilter = p.dataset.filter; renderReceiving(); })
+    );
+    $$("tbody tr", root).forEach((tr) =>
+      tr.addEventListener("click", () => {
+        const r = rows.find((x) => x.id === tr.dataset.id);
+        if (r) openReceivingDetail(r);
+      })
+    );
+  }
+
+  // ==========================================================================
+  //  VIEW: NEW RECEIVING
+  // ==========================================================================
+  async function renderNewReceiving() {
+    const root = $("#view-root");
+    root.innerHTML = '<div class="loading">Loading…</div>';
+    await loadUsers();
+
+    root.innerHTML = `
+      <form id="recv-form" class="card panel" style="max-width:860px">
+        <h3>New Receiving</h3>
+        <p class="sub">Register incoming goods, attach the PO / supplier invoice, and assign someone to check them on site.</p>
+        <div class="form-grid">
+          <label>PO / Invoice number
+            <input name="ref_number" placeholder="e.g. PO-2026-0712" />
+          </label>
+          <label>Supplier
+            <input name="supplier" placeholder="Supplier name" />
+          </label>
+          <label>Receiving site
+            <select name="location">${LOCATIONS.map((l) => `<option ${l === "Manhattan" ? "selected" : ""}>${l}</option>`).join("")}</select>
+          </label>
+          <label>Assign checker
+            ${assigneeSelect("assigned_to")}
+          </label>
+          <label class="full">Notes
+            <textarea name="notes" placeholder="Anything the checker should know"></textarea>
+          </label>
+          <div class="full">
+            <label>PO / Invoice attachment</label>
+            <label class="file-drop">
+              <input type="file" name="attachment" accept="image/*,.pdf" />
+              <span id="recv-file-label">📎 Click to attach the PO or supplier invoice</span>
+            </label>
+          </div>
+        </div>
+        <div class="ln3-head"><span>Item</span><span>Qty</span><span>Unit</span><span></span></div>
+        <div id="recv-lines"></div>
+        <button type="button" class="btn btn-ghost btn-sm" id="recv-add-line">➕ Add item</button>
+        <div class="modal-actions">
+          <button type="submit" class="btn btn-primary">Create receiving</button>
+          <button type="button" class="btn btn-ghost" onclick="location.hash='#receiving'">Cancel</button>
+        </div>
+        <p id="recv-msg" class="msg"></p>
+      </form>`;
+
+    const linesBox = $("#recv-lines");
+    addItemLine(linesBox); addItemLine(linesBox); addItemLine(linesBox);
+    $("#recv-add-line").addEventListener("click", () => addItemLine(linesBox));
+
+    const fi = $('#recv-form input[name=attachment]');
+    fi.addEventListener("change", () => {
+      const f = fi.files[0];
+      $("#recv-file-label").innerHTML = f ? '<span class="file-name">📎 ' + esc(f.name) + "</span>" : "📎 Click to attach the PO or supplier invoice";
+    });
+
+    $("#recv-form").addEventListener("submit", submitReceiving);
+  }
+
+  async function submitReceiving(e) {
+    e.preventDefault();
+    const form = e.target;
+    const btn = form.querySelector("button[type=submit]");
+    const msg = $("#recv-msg");
+    const lines = collectItemLines($("#recv-lines"), msg);
+    if (!lines) return;
+    const file = form.attachment.files[0];
+    if (file && file.size > 10 * 1024 * 1024) { msg.textContent = "Attachment is over 10 MB."; msg.className = "msg error"; return; }
+
+    btn.disabled = true; msg.className = "msg"; msg.textContent = "Creating…";
+    let orderId = null;
+    try {
+      let attachmentPath = null;
+      if (file) {
+        const safe = file.name.replace(/[^\w.\-]+/g, "_").slice(-50);
+        attachmentPath = `${state.user.id}/${Date.now()}-${safe}`;
+        const up = await sb.storage.from("receiving-files").upload(attachmentPath, file, { upsert: false });
+        if (up.error) throw up.error;
+      }
+      const { data: order, error: oErr } = await sb
+        .from("receiving_orders")
+        .insert({
+          created_by: state.user.id,
+          ref_number: form.ref_number.value.trim() || null,
+          supplier: form.supplier.value.trim() || null,
+          location: form.location.value,
+          assigned_to: form.assigned_to.value,
+          notes: form.notes.value.trim() || null,
+          attachment_path: attachmentPath,
+        })
+        .select().single();
+      if (oErr) throw oErr;
+      orderId = order.id;
+
+      const { error: lErr } = await sb.from("receiving_lines").insert(
+        lines.map((l, i) => ({ order_id: orderId, ...l, position: i }))
+      );
+      if (lErr) throw lErr;
+
+      toast("Receiving created ✔ — assigned to " + userName(form.assigned_to.value));
+      location.hash = "#receiving";
+    } catch (err) {
+      if (orderId) await sb.from("receiving_orders").delete().eq("id", orderId);
+      msg.textContent = err.message || "Something went wrong.";
+      msg.className = "msg error";
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ==========================================================================
+  //  RECEIVING DETAIL — checklist + confirm + report
+  // ==========================================================================
+  async function openReceivingDetail(r) {
+    const isAssignee = r.assigned_to === state.user.id;
+    const isAdmin = state.profile.role === "admin";
+    const canCheck = (isAssignee || isAdmin) && r.status === "pending";
+
+    const card = el(`
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:12px">
+          <div>
+            <h3 style="margin:0 0 4px">📥 ${esc(r.ref_number || "Receiving")}</h3>
+            <span class="badge ${r.status}">${r.status === "pending" ? "to check" : r.status}</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" data-close>✕</button>
+        </div>
+        <div style="margin-top:14px">
+          <div class="detail-row"><span class="k">Supplier</span><span class="v">${esc(r.supplier || "—")}</span></div>
+          <div class="detail-row"><span class="k">Site</span><span class="v">${esc(r.location)}</span></div>
+          <div class="detail-row"><span class="k">Created by</span><span class="v">${esc(userName(r.created_by))}</span></div>
+          <div class="detail-row"><span class="k">Assigned checker</span><span class="v">${esc(userName(r.assigned_to))}</span></div>
+          ${r.notes ? `<div class="detail-row"><span class="k">Notes</span><span class="v">${esc(r.notes)}</span></div>` : ""}
+          ${r.status === "confirmed" ? `<div class="detail-row"><span class="k">Confirmed</span><span class="v">${esc(userName(r.confirmed_by))} · ${fmtDate(r.confirmed_at)}</span></div>` : ""}
+        </div>
+        <div id="recv-attach" class="chips" style="margin-top:12px"></div>
+        <div class="check-progress" id="recv-progress"></div>
+        <div id="recv-checklist"></div>
+        <div id="detail-actions" class="modal-actions"></div>
+        <p id="detail-msg" class="msg"></p>
+      </div>`);
+    openModal(card);
+
+    // attachment
+    if (r.attachment_path) {
+      const slot = card.querySelector("#recv-attach");
+      const { data } = await sb.storage.from("receiving-files").createSignedUrl(r.attachment_path, 300);
+      if (data) slot.innerHTML = `<a class="btn btn-ghost btn-sm" href="${data.signedUrl}" target="_blank" rel="noopener">📎 View PO / invoice</a>`;
+    }
+
+    // lines
+    const { data: lines, error } = await sb
+      .from("receiving_lines").select("*").eq("order_id", r.id).order("position");
+    if (error) { card.querySelector("#recv-checklist").innerHTML = errorBox(error.message); return; }
+
+    const listBox = card.querySelector("#recv-checklist");
+    const progress = card.querySelector("#recv-progress");
+    const actions = card.querySelector("#detail-actions");
+    const msg = card.querySelector("#detail-msg");
+
+    let confirmBtn = null;
+    const updateProgress = () => {
+      const done = lines.filter((l) => l.checked).length;
+      progress.textContent = `Checked ${done} of ${lines.length} items`;
+      if (confirmBtn) confirmBtn.disabled = done !== lines.length;
+    };
+
+    lines.forEach((l) => {
+      const row = el(`
+        <label class="check-line ${l.checked ? "done" : ""}">
+          <input type="checkbox" ${l.checked ? "checked" : ""} ${canCheck ? "" : "disabled"} />
+          <span class="cl-name">${esc(l.item_name)}</span>
+          <span class="cl-qty">${esc(l.qty)} ${esc(l.unit || "")}</span>
+        </label>`);
+      if (canCheck) {
+        row.querySelector("input").addEventListener("change", async (ev) => {
+          const val = ev.target.checked;
+          const { error: uErr } = await sb.from("receiving_lines").update({ checked: val }).eq("id", l.id);
+          if (uErr) { ev.target.checked = !val; toast(uErr.message, "error"); return; }
+          l.checked = val;
+          row.classList.toggle("done", val);
+          updateProgress();
+        });
+      }
+      listBox.append(row);
+    });
+
+    if (canCheck) {
+      confirmBtn = el('<button class="btn btn-success">✔ Confirm receiving</button>');
+      confirmBtn.addEventListener("click", async () => {
+        confirmBtn.disabled = true;
+        msg.className = "msg"; msg.textContent = "Confirming…";
+        const { error: cErr } = await sb.from("receiving_orders").update({
+          status: "confirmed",
+          confirmed_by: state.user.id,
+          confirmed_at: new Date().toISOString(),
+        }).eq("id", r.id);
+        if (cErr) { msg.textContent = cErr.message; msg.className = "msg error"; confirmBtn.disabled = false; return; }
+        closeModal();
+        toast("Receiving confirmed ✔");
+        renderReceiving();
+      });
+      actions.append(confirmBtn);
+    }
+
+    if (r.status === "confirmed") {
+      const printBtn = el('<button class="btn btn-primary">🖨️ Print report</button>');
+      printBtn.addEventListener("click", () => printReceivingReport(r, lines));
+      actions.append(printBtn);
+    }
+
+    if (r.created_by === state.user.id && r.status === "pending") {
+      const del = el('<button class="btn btn-danger">Delete</button>');
+      del.addEventListener("click", async () => {
+        if (!confirm("Delete this receiving order?")) return;
+        const { error: dErr } = await sb.from("receiving_orders").delete().eq("id", r.id);
+        if (dErr) { toast(dErr.message, "error"); return; }
+        closeModal(); toast("Deleted"); renderReceiving();
+      });
+      actions.append(del);
+    }
+
+    updateProgress();
+  }
+
+  // Printable Goods Received Report (for Odoo entry)
+  function printReceivingReport(r, lines) {
+    const company = cfg.COMPANY_NAME || "Company";
+    const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
+    const rowsHtml = lines
+      .map(
+        (l, i) => `<tr><td>${i + 1}</td><td>${esc(l.item_name)}</td>
+          <td class="r">${esc(l.qty)}</td><td>${esc(l.unit || "—")}</td>
+          <td>${l.checked ? "✔ received" : "✕ missing"}</td></tr>`
+      )
+      .join("");
+
+    const doc = `<!doctype html><html><head><meta charset="utf-8"><title>Goods Received — ${esc(r.ref_number || "")}</title>
+      <style>
+        :root { color-scheme: light; }
+        * { box-sizing: border-box; }
+        html, body { background: #fff; }
+        body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #14211b; margin: 32px; }
+        .head { display:flex; justify-content:space-between; border-bottom:3px solid #157347; padding-bottom:14px; margin-bottom:20px; }
+        .company { font-size:22px; font-weight:800; color:#0f5132; }
+        .doc-title { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:#5f6f68; margin-top:2px; }
+        .meta { text-align:right; font-size:12px; color:#5f6f68; }
+        .info { display:grid; grid-template-columns:1fr 1fr; gap:6px 24px; font-size:13.5px; background:#e8f5ee; border-radius:10px; padding:14px 16px; margin-bottom:18px; }
+        .info b { font-weight:700; }
+        table { width:100%; border-collapse:collapse; font-size:13px; }
+        th, td { text-align:left; padding:9px 10px; border-bottom:1px solid #e2e8e4; }
+        th { background:#f4f7f5; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#5f6f68; }
+        td.r, th.r { text-align:right; }
+        .note { margin-top:20px; font-size:12.5px; color:#35443c; }
+        .sign { display:flex; gap:60px; margin-top:48px; font-size:12px; color:#5f6f68; }
+        .sign .box { flex:1; }
+        .sign .line { border-top:1px solid #9aa8a1; margin-top:44px; padding-top:6px; }
+        .toolbar { margin-bottom:18px; }
+        .btn { font:inherit; font-weight:600; background:#157347; color:#fff; border:0; border-radius:8px; padding:9px 16px; cursor:pointer; }
+        @media print { .toolbar { display:none; } body { margin:0; } }
+      </style></head><body>
+      <div class="toolbar"><button class="btn" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
+      <div class="head">
+        <div><div class="company">${esc(company)}</div><div class="doc-title">Goods Received Report</div></div>
+        <div class="meta">Printed: ${esc(today)}<br>Ref: ${esc(r.ref_number || "—")}</div>
+      </div>
+      <div class="info">
+        <div>Supplier: <b>${esc(r.supplier || "—")}</b></div>
+        <div>Receiving site: <b>${esc(r.location)}</b></div>
+        <div>Created by: <b>${esc(userName(r.created_by))}</b></div>
+        <div>Checked by: <b>${esc(userName(r.confirmed_by || r.assigned_to))}</b></div>
+        <div>Confirmed: <b>${esc(fmtDate(r.confirmed_at))}</b></div>
+        ${r.notes ? `<div>Notes: <b>${esc(r.notes)}</b></div>` : ""}
+      </div>
+      <table>
+        <thead><tr><th>#</th><th>Item</th><th class="r">Qty</th><th>Unit</th><th>Check result</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+      <div class="note">All listed items were physically checked at the receiving site. Use this report for Odoo entry.</div>
+      <div class="sign">
+        <div class="box"><div class="line">Checked by — ${esc(userName(r.confirmed_by || r.assigned_to))}</div></div>
+        <div class="box"><div class="line">Approved by</div></div>
+      </div>
+      <script>window.addEventListener('load',function(){setTimeout(function(){window.print();},250);});<\/script>
+      </body></html>`;
+
+    const w = window.open("", "_blank");
+    if (!w) { toast("Allow pop-ups for this site to print", "error"); return; }
+    w.document.open(); w.document.write(doc); w.document.close();
+  }
+
+  // ==========================================================================
+  //  VIEW: STORE MOVEMENTS (list)
+  // ==========================================================================
+  async function renderMovements() {
+    const root = $("#view-root");
+    root.innerHTML = '<div class="loading">Loading movements…</div>';
+    await loadUsers();
+
+    const { data, error } = await sb
+      .from("store_movements")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) { root.innerHTML = errorBox(error.message); return; }
+
+    const f = state.movFilter;
+    const rows = (data || []).filter((m) =>
+      f === "assigned" ? m.assigned_to === state.user.id :
+      f === "mine" ? m.created_by === state.user.id : true
+    );
+
+    let html = filterPills(f, [["assigned", "Assigned to me"], ["mine", "Created by me"], ["all", "All"]]);
+
+    if (!rows.length) {
+      html +=
+        '<div class="card panel empty"><div class="big">🔄</div><h3>Nothing here</h3>' +
+        '<p class="sub">No store movements in this filter.</p>' +
+        '<button class="btn btn-primary" onclick="location.hash=\'#newmovement\'">➕ New Movement</button></div>';
+    } else {
+      html += `<div class="card table-wrap"><table>
+        <thead><tr><th>Route</th><th>Created by</th><th>Assigned to</th><th>Date</th><th>Status</th></tr></thead>
+        <tbody>${rows
+          .map(
+            (m) => `<tr data-id="${m.id}">
+              <td><b>${esc(m.from_location)}</b> → <b>${esc(m.to_location)}</b></td>
+              <td>${esc(userName(m.created_by))}</td>
+              <td>${esc(userName(m.assigned_to))}</td>
+              <td>${fmtDate(m.created_at)}</td>
+              <td><span class="badge ${m.status}">${m.status}</span></td>
+            </tr>`
+          )
+          .join("")}</tbody></table></div>`;
+    }
+    root.innerHTML = html;
+
+    $$(".filter-pill", root).forEach((p) =>
+      p.addEventListener("click", () => { state.movFilter = p.dataset.filter; renderMovements(); })
+    );
+    $$("tbody tr", root).forEach((tr) =>
+      tr.addEventListener("click", () => {
+        const m = rows.find((x) => x.id === tr.dataset.id);
+        if (m) openMovementDetail(m);
+      })
+    );
+  }
+
+  // ==========================================================================
+  //  VIEW: NEW MOVEMENT
+  // ==========================================================================
+  async function renderNewMovement() {
+    const root = $("#view-root");
+    root.innerHTML = '<div class="loading">Loading…</div>';
+    await loadUsers();
+
+    root.innerHTML = `
+      <form id="mov-form" class="card panel" style="max-width:860px">
+        <h3>New Store Movement</h3>
+        <p class="sub">List the items to move, choose the route, and assign who moves them.</p>
+        <div class="form-grid">
+          <label>From
+            <select name="from_location">${LOCATIONS.map((l) => `<option>${l}</option>`).join("")}</select>
+          </label>
+          <label>To
+            <select name="to_location">${LOCATIONS.map((l, i) => `<option ${i === 1 ? "selected" : ""}>${l}</option>`).join("")}</select>
+          </label>
+          <label>Assign to
+            ${assigneeSelect("assigned_to")}
+          </label>
+          <label>Notes
+            <input name="notes" placeholder="Optional" />
+          </label>
+        </div>
+        <div class="ln3-head"><span>Item</span><span>Qty</span><span>Unit</span><span></span></div>
+        <div id="mov-lines"></div>
+        <button type="button" class="btn btn-ghost btn-sm" id="mov-add-line">➕ Add item</button>
+        <div class="modal-actions">
+          <button type="submit" class="btn btn-primary">Create movement</button>
+          <button type="button" class="btn btn-ghost" onclick="location.hash='#movements'">Cancel</button>
+        </div>
+        <p id="mov-msg" class="msg"></p>
+      </form>`;
+
+    const linesBox = $("#mov-lines");
+    addItemLine(linesBox); addItemLine(linesBox); addItemLine(linesBox);
+    $("#mov-add-line").addEventListener("click", () => addItemLine(linesBox));
+    $("#mov-form").addEventListener("submit", submitMovement);
+  }
+
+  async function submitMovement(e) {
+    e.preventDefault();
+    const form = e.target;
+    const btn = form.querySelector("button[type=submit]");
+    const msg = $("#mov-msg");
+    if (form.from_location.value === form.to_location.value) {
+      msg.textContent = "From and To must be different locations.";
+      msg.className = "msg error";
+      return;
+    }
+    const lines = collectItemLines($("#mov-lines"), msg);
+    if (!lines) return;
+
+    btn.disabled = true; msg.className = "msg"; msg.textContent = "Creating…";
+    let movId = null;
+    try {
+      const { data: mov, error: mErr } = await sb
+        .from("store_movements")
+        .insert({
+          created_by: state.user.id,
+          from_location: form.from_location.value,
+          to_location: form.to_location.value,
+          assigned_to: form.assigned_to.value,
+          notes: form.notes.value.trim() || null,
+        })
+        .select().single();
+      if (mErr) throw mErr;
+      movId = mov.id;
+
+      const { error: lErr } = await sb.from("movement_lines").insert(
+        lines.map((l, i) => ({ movement_id: movId, ...l, position: i }))
+      );
+      if (lErr) throw lErr;
+
+      toast("Movement created ✔ — assigned to " + userName(form.assigned_to.value));
+      location.hash = "#movements";
+    } catch (err) {
+      if (movId) await sb.from("store_movements").delete().eq("id", movId);
+      msg.textContent = err.message || "Something went wrong.";
+      msg.className = "msg error";
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ==========================================================================
+  //  MOVEMENT DETAIL — prepare / complete
+  // ==========================================================================
+  async function openMovementDetail(m) {
+    const isAssignee = m.assigned_to === state.user.id;
+    const isAdmin = state.profile.role === "admin";
+
+    const card = el(`
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:12px">
+          <div>
+            <h3 style="margin:0 0 4px">🔄 ${esc(m.from_location)} → ${esc(m.to_location)}</h3>
+            <span class="badge ${m.status}">${m.status}</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" data-close>✕</button>
+        </div>
+        <div style="margin-top:14px">
+          <div class="detail-row"><span class="k">Created by</span><span class="v">${esc(userName(m.created_by))}</span></div>
+          <div class="detail-row"><span class="k">Assigned to</span><span class="v">${esc(userName(m.assigned_to))}</span></div>
+          <div class="detail-row"><span class="k">Created</span><span class="v">${fmtDate(m.created_at)}</span></div>
+          ${m.notes ? `<div class="detail-row"><span class="k">Notes</span><span class="v">${esc(m.notes)}</span></div>` : ""}
+          ${m.status === "completed" ? `<div class="detail-row"><span class="k">Completed</span><span class="v">${esc(userName(m.completed_by))} · ${fmtDate(m.completed_at)}</span></div>` : ""}
+        </div>
+        <div id="mov-items" style="margin-top:12px"></div>
+        <div id="detail-actions" class="modal-actions"></div>
+        <p id="detail-msg" class="msg"></p>
+      </div>`);
+    openModal(card);
+
+    const { data: lines, error } = await sb
+      .from("movement_lines").select("*").eq("movement_id", m.id).order("position");
+    const itemsBox = card.querySelector("#mov-items");
+    if (error) { itemsBox.innerHTML = errorBox(error.message); return; }
+    itemsBox.innerHTML = `<div class="table-wrap"><table>
+      <thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Unit</th></tr></thead>
+      <tbody>${(lines || [])
+        .map((l, i) => `<tr><td>${i + 1}</td><td>${esc(l.item_name)}</td><td class="amount">${esc(l.qty)}</td><td>${esc(l.unit || "—")}</td></tr>`)
+        .join("")}</tbody></table></div>`;
+
+    const actions = card.querySelector("#detail-actions");
+    const msg = card.querySelector("#detail-msg");
+
+    const setStatus = async (patch, okMsg) => {
+      msg.className = "msg"; msg.textContent = "Saving…";
+      const { error: uErr } = await sb.from("store_movements").update(patch).eq("id", m.id);
+      if (uErr) { msg.textContent = uErr.message; msg.className = "msg error"; return; }
+      closeModal(); toast(okMsg); renderMovements();
+    };
+
+    if ((isAssignee || isAdmin) && m.status === "pending") {
+      const prep = el('<button class="btn btn-ghost">🚚 Start preparing</button>');
+      prep.addEventListener("click", () => setStatus({ status: "preparing" }, "Movement in preparation"));
+      actions.append(prep);
+    }
+    if ((isAssignee || isAdmin) && m.status !== "completed") {
+      const done = el('<button class="btn btn-success">✔ Complete movement</button>');
+      done.addEventListener("click", () =>
+        setStatus(
+          { status: "completed", completed_by: state.user.id, completed_at: new Date().toISOString() },
+          "Movement completed ✔"
+        )
+      );
+      actions.append(done);
+    }
+    if (m.status === "completed") {
+      const printBtn = el('<button class="btn btn-primary">🖨️ Transfer report</button>');
+      printBtn.addEventListener("click", () => printMovementReport(m, lines || []));
+      actions.append(printBtn);
+    }
+    if (m.created_by === state.user.id && m.status === "pending") {
+      const del = el('<button class="btn btn-danger">Delete</button>');
+      del.addEventListener("click", async () => {
+        if (!confirm("Delete this movement?")) return;
+        const { error: dErr } = await sb.from("store_movements").delete().eq("id", m.id);
+        if (dErr) { toast(dErr.message, "error"); return; }
+        closeModal(); toast("Deleted"); renderMovements();
+      });
+      actions.append(del);
+    }
+  }
+
+  // Printable Store Transfer Report (for Odoo entry)
+  function printMovementReport(m, lines) {
+    const company = cfg.COMPANY_NAME || "Company";
+    const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
+    const rowsHtml = lines
+      .map((l, i) => `<tr><td>${i + 1}</td><td>${esc(l.item_name)}</td><td class="r">${esc(l.qty)}</td><td>${esc(l.unit || "—")}</td></tr>`)
+      .join("");
+
+    const doc = `<!doctype html><html><head><meta charset="utf-8"><title>Transfer — ${esc(m.from_location)} to ${esc(m.to_location)}</title>
+      <style>
+        :root { color-scheme: light; }
+        * { box-sizing: border-box; }
+        html, body { background: #fff; }
+        body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #14211b; margin: 32px; }
+        .head { display:flex; justify-content:space-between; border-bottom:3px solid #157347; padding-bottom:14px; margin-bottom:20px; }
+        .company { font-size:22px; font-weight:800; color:#0f5132; }
+        .doc-title { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:#5f6f68; margin-top:2px; }
+        .meta { text-align:right; font-size:12px; color:#5f6f68; }
+        .route { font-size:20px; font-weight:800; background:#e8f5ee; border-radius:10px; padding:14px 16px; margin-bottom:14px; color:#0f5132; }
+        .info { display:grid; grid-template-columns:1fr 1fr; gap:6px 24px; font-size:13.5px; margin-bottom:18px; }
+        table { width:100%; border-collapse:collapse; font-size:13px; }
+        th, td { text-align:left; padding:9px 10px; border-bottom:1px solid #e2e8e4; }
+        th { background:#f4f7f5; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#5f6f68; }
+        td.r, th.r { text-align:right; }
+        .note { margin-top:20px; font-size:12.5px; color:#35443c; }
+        .sign { display:flex; gap:60px; margin-top:48px; font-size:12px; color:#5f6f68; }
+        .sign .box { flex:1; }
+        .sign .line { border-top:1px solid #9aa8a1; margin-top:44px; padding-top:6px; }
+        .toolbar { margin-bottom:18px; }
+        .btn { font:inherit; font-weight:600; background:#157347; color:#fff; border:0; border-radius:8px; padding:9px 16px; cursor:pointer; }
+        @media print { .toolbar { display:none; } body { margin:0; } }
+      </style></head><body>
+      <div class="toolbar"><button class="btn" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
+      <div class="head">
+        <div><div class="company">${esc(company)}</div><div class="doc-title">Store Transfer Report</div></div>
+        <div class="meta">Printed: ${esc(today)}</div>
+      </div>
+      <div class="route">${esc(m.from_location)} &nbsp;→&nbsp; ${esc(m.to_location)}</div>
+      <div class="info">
+        <div>Requested by: <b>${esc(userName(m.created_by))}</b></div>
+        <div>Moved by: <b>${esc(userName(m.completed_by || m.assigned_to))}</b></div>
+        <div>Created: <b>${esc(fmtDate(m.created_at))}</b></div>
+        <div>Completed: <b>${esc(fmtDate(m.completed_at))}</b></div>
+        ${m.notes ? `<div>Notes: <b>${esc(m.notes)}</b></div>` : ""}
+      </div>
+      <table>
+        <thead><tr><th>#</th><th>Item</th><th class="r">Qty</th><th>Unit</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+      <div class="note">Transfer completed between the sites above. Use this report for Odoo entry.</div>
+      <div class="sign">
+        <div class="box"><div class="line">Moved by — ${esc(userName(m.completed_by || m.assigned_to))}</div></div>
+        <div class="box"><div class="line">Received at ${esc(m.to_location)}</div></div>
+      </div>
+      <script>window.addEventListener('load',function(){setTimeout(function(){window.print();},250);});<\/script>
+      </body></html>`;
+
+    const w = window.open("", "_blank");
+    if (!w) { toast("Allow pop-ups for this site to print", "error"); return; }
+    w.document.open(); w.document.write(doc); w.document.close();
+  }
+
+  // ==========================================================================
+  //  VIEW: SITE OPS TRACKING (admin) — all receiving + movements, with reports
+  // ==========================================================================
+  async function renderTracking() {
+    const root = $("#view-root");
+    root.innerHTML = '<div class="loading">Loading…</div>';
+    await loadUsers();
+
+    const mod = state.trackModule;
+    const seg = `
+      <div class="seg">
+        <button data-mod="receiving" class="${mod === "receiving" ? "active" : ""}">📥 Receiving</button>
+        <button data-mod="movement" class="${mod === "movement" ? "active" : ""}">🔄 Transfers</button>
+      </div>`;
+
+    const filterSets = {
+      receiving: [["pending", "To check"], ["confirmed", "Confirmed"], ["all", "All"]],
+      movement: [["pending", "Pending"], ["preparing", "Preparing"], ["completed", "Completed"], ["all", "All"]],
+    };
+    const validKeys = filterSets[mod].map((x) => x[0]);
+    if (!validKeys.includes(state.trackFilter)) state.trackFilter = "all";
+    const f = state.trackFilter;
+
+    const table = mod === "receiving" ? "receiving_orders" : "store_movements";
+    let query = sb.from(table).select("*").order("created_at", { ascending: false });
+    if (f !== "all") query = query.eq("status", f);
+    const { data, error } = await query;
+    if (error) { root.innerHTML = errorBox(error.message); return; }
+    const rows = data || [];
+
+    let body;
+    if (!rows.length) {
+      body = '<div class="card panel empty"><div class="big">📦</div><h3>Nothing here</h3><p class="sub">No items in this filter.</p></div>';
+    } else if (mod === "receiving") {
+      body = `<div class="card table-wrap"><table>
+        <thead><tr><th>Ref / PO</th><th>Supplier</th><th>Site</th><th>Checker</th><th>Status</th><th>Date</th><th></th></tr></thead>
+        <tbody>${rows
+          .map(
+            (r) => `<tr data-id="${r.id}">
+              <td>${esc(r.ref_number || "—")}</td>
+              <td>${esc(r.supplier || "—")}</td>
+              <td>${esc(r.location)}</td>
+              <td>${esc(userName(r.assigned_to))}</td>
+              <td><span class="badge ${r.status}">${r.status === "pending" ? "to check" : r.status}</span></td>
+              <td>${fmtDate(r.confirmed_at || r.created_at)}</td>
+              <td>${r.status === "confirmed" ? `<button class="btn btn-ghost btn-sm row-print" data-id="${r.id}">🖨️</button>` : ""}</td>
+            </tr>`
+          )
+          .join("")}</tbody></table></div>`;
+    } else {
+      body = `<div class="card table-wrap"><table>
+        <thead><tr><th>Route</th><th>Requested by</th><th>Moved by</th><th>Status</th><th>Date</th><th></th></tr></thead>
+        <tbody>${rows
+          .map(
+            (m) => `<tr data-id="${m.id}">
+              <td><b>${esc(m.from_location)}</b> → <b>${esc(m.to_location)}</b></td>
+              <td>${esc(userName(m.created_by))}</td>
+              <td>${esc(userName(m.completed_by || m.assigned_to))}</td>
+              <td><span class="badge ${m.status}">${m.status}</span></td>
+              <td>${fmtDate(m.completed_at || m.created_at)}</td>
+              <td>${m.status === "completed" ? `<button class="btn btn-ghost btn-sm row-print" data-id="${m.id}">🖨️</button>` : ""}</td>
+            </tr>`
+          )
+          .join("")}</tbody></table></div>`;
+    }
+
+    const pills = filterSets[mod]
+      .map(([key, label]) => `<button class="filter-pill ${key === f ? "active" : ""}" data-filter="${key}">${label}</button>`)
+      .join("");
+    root.innerHTML = seg + `<div class="toolbar">${pills}</div>` + body;
+
+    $$(".seg button", root).forEach((b) =>
+      b.addEventListener("click", () => { state.trackModule = b.dataset.mod; renderTracking(); })
+    );
+    $$(".filter-pill", root).forEach((p) =>
+      p.addEventListener("click", () => { state.trackFilter = p.dataset.filter; renderTracking(); })
+    );
+    // row click -> reuse the standard detail modals
+    $$("tbody tr", root).forEach((tr) =>
+      tr.addEventListener("click", (e) => {
+        if (e.target.closest(".row-print")) return;
+        const rec = rows.find((x) => x.id === tr.dataset.id);
+        if (!rec) return;
+        if (mod === "receiving") openReceivingDetail(rec);
+        else openMovementDetail(rec);
+      })
+    );
+    // one-click report from the list
+    $$(".row-print", root).forEach((b) =>
+      b.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const rec = rows.find((x) => x.id === b.dataset.id);
+        if (!rec) return;
+        if (mod === "receiving") {
+          const { data: lines } = await sb.from("receiving_lines").select("*").eq("order_id", rec.id).order("position");
+          printReceivingReport(rec, lines || []);
+        } else {
+          const { data: lines } = await sb.from("movement_lines").select("*").eq("movement_id", rec.id).order("position");
+          printMovementReport(rec, lines || []);
+        }
+      })
+    );
   }
 
   // ==========================================================================
