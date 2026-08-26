@@ -2094,9 +2094,12 @@
               <div class="dg-user">${esc(name)}</div>
               ${bankLine}
             </div>
-            <div style="display:flex;align-items:center;gap:14px">
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
               <div class="dg-total"><div class="lbl">To pay</div><div class="val">${totalStr}</div></div>
-              <button class="btn btn-ghost btn-sm print-group" data-uid="${uid}">🖨️ Print</button>
+              <div style="display:flex;gap:8px">
+                <button class="btn btn-ghost btn-sm print-group" data-uid="${uid}">🖨️ Print</button>
+                <button class="btn btn-success btn-sm mark-all-paid" data-uid="${uid}">✔ Mark all paid (${groupItems.length})</button>
+              </div>
             </div>
           </div>
           <div class="table-wrap">
@@ -2131,6 +2134,31 @@
       b.addEventListener("click", (e) => {
         e.stopPropagation();
         printDisbursement(profMap[b.dataset.uid] || {}, groups[b.dataset.uid] || []);
+      })
+    );
+    // mark ALL of one employee's items paid in one go
+    $$(".mark-all-paid", root).forEach((b) =>
+      b.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const uid = b.dataset.uid;
+        const groupItems = groups[uid] || [];
+        if (!groupItems.length) return;
+        const who = (profMap[uid] && (profMap[uid].full_name || profMap[uid].email)) || "this employee";
+        if (!confirm(`Mark all ${groupItems.length} item(s) for ${who} as paid?`)) return;
+
+        b.disabled = true;
+        const stamp = { paid_at: new Date().toISOString(), paid_by: state.user.id };
+        // batch per table
+        const byType = {};
+        groupItems.forEach((it) => (byType[it.type] = byType[it.type] || []).push(it.r.id));
+        let failed = null;
+        for (const [type, ids] of Object.entries(byType)) {
+          const { error: uErr } = await sb.from(TYPES[type].table).update(stamp).in("id", ids);
+          if (uErr) { failed = uErr; break; }
+        }
+        if (failed) { toast(failed.message, "error"); b.disabled = false; return; }
+        toast(`All items for ${who} marked paid 💸`);
+        renderDisburse();
       })
     );
   }
