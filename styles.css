@@ -156,6 +156,15 @@ textarea { resize: vertical; min-height: 78px; }
   .line-row { grid-template-columns: 1fr 100px 40px 34px; }
 }
 
+/* admin payment-batch sections */
+.section-h {
+  font-size: 13px; font-weight: 700; color: var(--muted);
+  margin: 18px 2px 8px; letter-spacing: .02em;
+}
+.section-h:first-child { margin-top: 0; }
+.section-h.paid { color: var(--green-700); }
+.section-h b { color: var(--green-700); }
+
 /* disbursement */
 .disburse-group { margin-bottom: 18px; }
 .dg-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }

@@ -72,6 +72,8 @@
   };
   const fmtDate = (d) =>
     d ? new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+  const fmtDateTime = (d) =>
+    d ? new Date(d).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
 
   let toastTimer;
   function toast(msg, kind = "ok") {
@@ -1630,8 +1632,26 @@
     const { data, error } = await query;
     if (error) { root.innerHTML = errorBox(error.message); return; }
 
-    // fetch requester names
-    const ids = [...new Set(data.map((r) => r.requester_id))];
+    // approved/all tabs: split into "not yet paid" + payment batches
+    const showBatches = state.adminFilter === "approved" || state.adminFilter === "all";
+    const paidRows = showBatches ? data.filter((r) => r.paid_at) : [];
+    const unpaidRows = showBatches ? data.filter((r) => !r.paid_at) : data;
+
+    const batchIds = [...new Set(paidRows.map((r) => r.batch_id).filter(Boolean))];
+    const batchMap = {};
+    if (batchIds.length) {
+      const { data: batches } = await sb.from("disbursement_batches").select("*").in("id", batchIds);
+      (batches || []).forEach((bt) => (batchMap[bt.id] = bt));
+    }
+
+    // fetch names: requesters + who paid + batch creators
+    const ids = [
+      ...new Set([
+        ...data.map((r) => r.requester_id),
+        ...paidRows.map((r) => r.paid_by).filter(Boolean),
+        ...Object.values(batchMap).map((bt) => bt.created_by),
+      ]),
+    ];
     const nameMap = {};
     if (ids.length) {
       const { data: profs } = await sb.from("profiles").select("id,full_name,email").in("id", ids);
@@ -1655,17 +1675,41 @@
       )
       .join("");
 
+    const tableFn = mod === "trip" ? tripsTable : mod === "petty" ? pettyTable : requestsTable;
+
     let body;
     if (!data.length) {
       body =
         '<div class="card panel empty"><div class="big">✅</div><h3>Nothing here</h3>' +
         `<p class="sub">No ${state.adminFilter === "all" ? "" : state.adminFilter} items.</p></div>`;
-    } else if (mod === "trip") {
-      body = tripsTable(data, true, nameMap);
-    } else if (mod === "petty") {
-      body = pettyTable(data, true, nameMap);
+    } else if (!showBatches) {
+      body = tableFn(data, true, nameMap);
     } else {
-      body = requestsTable(data, true, nameMap);
+      body = "";
+      if (unpaidRows.length) {
+        body += `<div class="section-h">⏳ Not yet paid (${unpaidRows.length})</div>` + tableFn(unpaidRows, true, nameMap);
+      }
+      // group paid items into payment batches (fallback: identical paid_at = one payment)
+      const batchGroups = {};
+      paidRows.forEach((r) => {
+        const k = r.batch_id || "t:" + r.paid_at;
+        (batchGroups[k] = batchGroups[k] || []).push(r);
+      });
+      const timeOf = (k) => batchMap[k]?.created_at || batchGroups[k][0].paid_at;
+      const keys = Object.keys(batchGroups).sort((a, b) => new Date(timeOf(b)) - new Date(timeOf(a)));
+      for (const k of keys) {
+        const rows = batchGroups[k];
+        const payer = batchMap[k]?.created_by || rows[0].paid_by;
+        const totals = {};
+        rows.forEach((r) => {
+          const cur = TYPES[mod].currency(r) || "IDR";
+          totals[cur] = (totals[cur] || 0) + Number(TYPES[mod].amount(r) || 0);
+        });
+        const totalStr = Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ");
+        body +=
+          `<div class="section-h paid">💸 Payment — ${fmtDateTime(timeOf(k))} · by ${esc(nameMap[payer] || "—")} · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b></div>` +
+          tableFn(rows, true, nameMap);
+      }
     }
 
     root.innerHTML = seg + `<div class="toolbar">${pills}</div>` + body;
@@ -1972,10 +2016,23 @@
     renderAdmin();
   }
 
+  // creates one payment batch record; returns its id (or null if the batches
+  // table doesn't exist yet, so paying still works before the migration runs)
+  async function createBatch() {
+    const { data, error } = await sb
+      .from("disbursement_batches")
+      .insert({ created_by: state.user.id })
+      .select()
+      .single();
+    if (error) return null;
+    return data.id;
+  }
+
   async function markPaid(type, id) {
+    const batchId = await createBatch();
     const { error } = await sb
       .from(TYPES[type].table)
-      .update({ paid_at: new Date().toISOString(), paid_by: state.user.id })
+      .update({ paid_at: new Date().toISOString(), paid_by: state.user.id, ...(batchId ? { batch_id: batchId } : {}) })
       .eq("id", id);
     if (error) { toast(error.message, "error"); return false; }
     toast("Marked as paid 💸");
@@ -2147,7 +2204,8 @@
         if (!confirm(`Mark all ${groupItems.length} item(s) for ${who} as paid?`)) return;
 
         b.disabled = true;
-        const stamp = { paid_at: new Date().toISOString(), paid_by: state.user.id };
+        const batchId = await createBatch(); // one payment batch for the whole group
+        const stamp = { paid_at: new Date().toISOString(), paid_by: state.user.id, ...(batchId ? { batch_id: batchId } : {}) };
         // batch per table
         const byType = {};
         groupItems.forEach((it) => (byType[it.type] = byType[it.type] || []).push(it.r.id));
