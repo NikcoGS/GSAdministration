@@ -1687,7 +1687,10 @@
     } else {
       body = "";
       if (unpaidRows.length) {
-        body += `<div class="section-h">⏳ Not yet paid (${unpaidRows.length})</div>` + tableFn(unpaidRows, true, nameMap);
+        body +=
+          `<details class="batch-sec" open><summary class="section-h">⏳ Not yet paid (${unpaidRows.length})</summary>` +
+          tableFn(unpaidRows, true, nameMap) +
+          `</details>`;
       }
       // group paid items into payment batches (fallback: identical paid_at = one payment)
       const batchGroups = {};
@@ -1707,8 +1710,9 @@
         });
         const totalStr = Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ");
         body +=
-          `<div class="section-h paid">💸 Payment — ${fmtDateTime(timeOf(k))} · by ${esc(nameMap[payer] || "—")} · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b></div>` +
-          tableFn(rows, true, nameMap);
+          `<details class="batch-sec"><summary class="section-h paid">💸 Payment — ${fmtDateTime(timeOf(k))} · by ${esc(nameMap[payer] || "—")} · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b></summary>` +
+          tableFn(rows, true, nameMap) +
+          `</details>`;
       }
     }
 

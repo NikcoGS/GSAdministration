@@ -156,7 +156,7 @@ textarea { resize: vertical; min-height: 78px; }
   .line-row { grid-template-columns: 1fr 100px 40px 34px; }
 }
 
-/* admin payment-batch sections */
+/* admin payment-batch sections (collapsible) */
 .section-h {
   font-size: 13px; font-weight: 700; color: var(--muted);
   margin: 18px 2px 8px; letter-spacing: .02em;
@@ -164,6 +164,31 @@ textarea { resize: vertical; min-height: 78px; }
 .section-h:first-child { margin-top: 0; }
 .section-h.paid { color: var(--green-700); }
 .section-h b { color: var(--green-700); }
+
+details.batch-sec { margin: 0 0 6px; }
+details.batch-sec summary.section-h { margin: 0; }
+details.batch-sec summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  user-select: none;
+  flex-wrap: wrap;
+}
+details.batch-sec summary::-webkit-details-marker { display: none; }
+details.batch-sec summary::before {
+  content: "▸";
+  font-size: 12px;
+  color: var(--muted);
+  transition: transform .15s ease;
+  flex: none;
+}
+details.batch-sec[open] summary::before { transform: rotate(90deg); }
+details.batch-sec summary:hover { background: #fafcfb; }
+details.batch-sec .card { margin: 8px 0 14px; }
 
 /* disbursement */
 .disburse-group { margin-bottom: 18px; }
