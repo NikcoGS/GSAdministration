@@ -971,6 +971,7 @@
               <input type="file" name="attachment" accept="image/*,.pdf" />
               <span id="recv-file-label">📎 Click to attach the PO or supplier invoice</span>
             </label>
+            <button type="button" class="btn btn-ghost btn-sm hidden" id="recv-parse" style="margin-top:8px">✨ Read items from PO</button>
           </div>
         </div>
         <div class="ln3-head"><span>Item</span><span>Qty</span><span>Unit</span><span></span></div>
@@ -991,9 +992,86 @@
     fi.addEventListener("change", () => {
       const f = fi.files[0];
       $("#recv-file-label").innerHTML = f ? '<span class="file-name">📎 ' + esc(f.name) + "</span>" : "📎 Click to attach the PO or supplier invoice";
+      $("#recv-parse").classList.toggle("hidden", !f);
     });
 
+    $("#recv-parse").addEventListener("click", () => parsePO(fi.files[0], linesBox));
+
     $("#recv-form").addEventListener("submit", submitReceiving);
+  }
+
+  // Read the attached PO/invoice with AI (edge function "parse-po") and
+  // pre-fill supplier, ref number and item lines for the user to verify.
+  async function parsePO(file, linesBox) {
+    const msg = $("#recv-msg");
+    const btn = $("#recv-parse");
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+      msg.textContent = "File is too large to read automatically (max 8 MB) — type the items manually.";
+      msg.className = "msg error";
+      return;
+    }
+
+    btn.disabled = true;
+    const oldLabel = btn.textContent;
+    btn.textContent = "✨ Reading PO…";
+    msg.className = "msg";
+    msg.textContent = "";
+
+    try {
+      // file -> base64 (without the data: prefix)
+      const b64 = await new Promise((res, rej) => {
+        const rd = new FileReader();
+        rd.onload = () => res(String(rd.result).split(",")[1]);
+        rd.onerror = rej;
+        rd.readAsDataURL(file);
+      });
+      const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
+
+      const { data: parsed, error } = await sb.functions.invoke("parse-po", {
+        body: { data: b64, media_type: mediaType },
+      });
+      if (error) {
+        let detail = "";
+        try { detail = (await error.context?.json())?.error || ""; } catch { /* ignore */ }
+        throw new Error(detail || "PO reading is not set up yet (deploy the parse-po function in Supabase).");
+      }
+      if (parsed?.error) throw new Error(parsed.error);
+
+      const form = $("#recv-form");
+      if (parsed.supplier && !form.supplier.value.trim()) form.supplier.value = parsed.supplier;
+      if (parsed.ref_number && !form.ref_number.value.trim()) form.ref_number.value = parsed.ref_number;
+
+      const items = Array.isArray(parsed.items) ? parsed.items : [];
+      if (!items.length) {
+        msg.textContent = "No item lines found in this document — type them manually.";
+        msg.className = "msg error";
+        return;
+      }
+
+      // drop empty editor rows, then append the parsed lines
+      $$(".ln3-row", linesBox).forEach((row) => {
+        const filled = row.querySelector(".ln-item").value.trim() || row.querySelector(".ln-qty").value;
+        if (!filled) row.remove();
+      });
+      items.forEach((it) => {
+        addItemLine(linesBox);
+        const row = linesBox.lastElementChild;
+        row.querySelector(".ln-item").value = it.item_name || "";
+        row.querySelector(".ln-qty").value = it.qty != null && it.qty > 0 ? it.qty : 1;
+        row.querySelector(".ln-unit").value = it.unit || "";
+      });
+
+      msg.textContent = `Read ${items.length} item${items.length === 1 ? "" : "s"} from the PO — please verify before submitting.`;
+      msg.className = "msg ok";
+      toast(`✨ ${items.length} items read from PO`);
+    } catch (err) {
+      msg.textContent = err.message || "Could not read the PO.";
+      msg.className = "msg error";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = oldLabel;
+    }
   }
 
   async function submitReceiving(e) {
