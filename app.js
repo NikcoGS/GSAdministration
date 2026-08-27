@@ -1028,7 +1028,8 @@
       });
       const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
 
-      const { data: parsed, error } = await sb.functions.invoke("parse-po", {
+      // NOTE: the dashboard deployed the parse-po function under the slug "swift-action"
+      const { data: parsed, error } = await sb.functions.invoke("swift-action", {
         body: { data: b64, media_type: mediaType },
       });
       if (error) {
