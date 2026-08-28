@@ -2348,7 +2348,8 @@
         ["Submitted", fmtDate(r.created_at)],
       );
       if (r.description) rows.push(["Notes", r.description]);
-      files = [{ label: "📎 View invoice / bill", bucket: "invoices", path: r.invoice_path }];
+      // hidePrices context (receiving): no invoice link — the invoice shows prices
+      files = opts.hidePrices ? [] : [{ label: "📎 View invoice / bill", bucket: "invoices", path: r.invoice_path }];
     }
 
     if (r.status !== "pending") {
