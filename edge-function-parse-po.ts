@@ -32,6 +32,18 @@ Extract:
 Reply with ONLY the JSON object, no other text:
 {"supplier": ..., "ref_number": ..., "items": [...]}`;
 
+const PROOF_PROMPT = `This document is a bank transfer receipt / payment proof (bukti transfer), possibly in Indonesian, from a banking app or bank statement.
+Extract:
+- "amount": the transferred amount as a plain number (no separators)
+- "currency": ISO 4217 code of the amount ("IDR" for Rupiah / Rp)
+- "date": the transfer date as "YYYY-MM-DD" (null if unreadable)
+- "to_account": the destination account number (string or null)
+- "to_name": the destination account holder / beneficiary name (string or null)
+- "bank": the destination bank name (string or null)
+- "reference": the transaction reference number (string or null)
+Reply with ONLY the JSON object, no other text:
+{"amount": ..., "currency": ..., "date": ..., "to_account": ..., "to_name": ..., "bank": ..., "reference": ...}`;
+
 const INVOICE_PROMPT = `This document is a supplier invoice or purchase order, possibly in Indonesian.
 Extract:
 - "supplier": the supplier / vendor company name (string or null)
@@ -63,7 +75,10 @@ Deno.serve(async (req) => {
         ? { type: "document", source: { type: "base64", media_type, data } }
         : { type: "image", source: { type: "base64", media_type, data } };
 
-    const prompt = mode === "invoice" ? INVOICE_PROMPT : RECEIVING_PROMPT;
+    const prompt =
+      mode === "invoice" ? INVOICE_PROMPT :
+      mode === "payment_proof" ? PROOF_PROMPT :
+      RECEIVING_PROMPT;
 
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -94,6 +109,7 @@ Deno.serve(async (req) => {
     if (!m) return json({ error: "Could not read items from this document." }, 422);
 
     const parsed = JSON.parse(m[0]);
+    if (mode === "payment_proof") return json(parsed);
     if (!Array.isArray(parsed.items)) parsed.items = [];
 
     // invoice mode: convert foreign currency to IDR with a live rate

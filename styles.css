@@ -230,6 +230,21 @@ details.batch-sec .card { margin: 8px 0 14px; }
 .fx-hint { font-size: 13px; color: var(--muted); font-weight: 600; }
 @media (max-width: 720px) { .ln4-head { display: none; } .ln4-row { grid-template-columns: 1fr 56px 90px 80px 30px; } }
 
+/* payment proof verification results */
+.verify-box {
+  background: #fbfdfc;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 10px;
+  font-size: 13px;
+  display: grid;
+  gap: 5px;
+}
+.verify-box .ok { color: var(--green-700); }
+.verify-box .warn { color: var(--amber); }
+.verify-box .bad { color: var(--red); font-weight: 600; }
+
 /* receiving checklist in detail modal */
 .check-line { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; }
 .check-line input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--green-600); flex: none; }

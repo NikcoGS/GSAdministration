@@ -2182,7 +2182,7 @@
         });
         const totalStr = Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ");
         body +=
-          `<details class="batch-sec"><summary class="section-h paid">💸 Payment — ${fmtDateTime(timeOf(k))} · by ${esc(nameMap[payer] || "—")} · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b></summary>` +
+          `<details class="batch-sec"><summary class="section-h paid">💸 Payment — ${fmtDateTime(timeOf(k))} · by ${esc(nameMap[payer] || "—")}${batchMap[k]?.bank_ref ? " · ref " + esc(batchMap[k].bank_ref) : ""} · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b></summary>` +
           tableFn(rows, true, nameMap) +
           `</details>`;
       }
@@ -2458,6 +2458,23 @@
       );
     }
 
+    // Admin: show the payment entry (ref, date, proof) for paid items
+    if (isAdmin && r.batch_id) {
+      const { data: bt } = await sb.from("disbursement_batches").select("*").eq("id", r.batch_id).maybeSingle();
+      if (bt) {
+        const slot2 = card.querySelector("#file-slot");
+        const bits = [];
+        if (bt.paid_date) bits.push("paid " + fmtDate(bt.paid_date));
+        if (bt.amount) bits.push(money(bt.amount, bt.currency || "IDR"));
+        if (bt.bank_ref) bits.push("ref " + bt.bank_ref);
+        if (bits.length) slot2.append(el(`<span class="hint">💸 ${esc(bits.join(" · "))}</span>`));
+        if (bt.proof_path) {
+          const { data: pu } = await sb.storage.from("payment-proofs").createSignedUrl(bt.proof_path, 120);
+          if (pu) slot2.append(el(`<a class="btn btn-ghost btn-sm" href="${pu.signedUrl}" target="_blank" rel="noopener">🧾 View transfer proof</a>`));
+        }
+      }
+    }
+
     const actions = card.querySelector("#detail-actions");
 
     // Admin: approve / reject (with optional note field shown up front)
@@ -2475,15 +2492,10 @@
       actions.append(approve, reject);
     }
 
-    // Admin: mark an approved & unpaid item as paid (disbursed)
+    // Admin: input the payment for an approved & unpaid item
     if (isAdmin && r.status === "approved" && !r.paid_at && !opts.hidePrices) {
-      const pay = el('<button class="btn btn-primary">💸 Mark as paid</button>');
-      pay.addEventListener("click", async () => {
-        pay.disabled = true;
-        const ok = await markPaid(type, r.id);
-        if (ok) closeModal();
-        else pay.disabled = false;
-      });
+      const pay = el('<button class="btn btn-primary">💸 Input payment</button>');
+      pay.addEventListener("click", () => openPaymentModal([{ type, r }]));
       actions.append(pay);
     }
 
@@ -2533,28 +2545,211 @@
     renderAdmin();
   }
 
-  // creates one payment batch record; returns its id (or null if the batches
-  // table doesn't exist yet, so paying still works before the migration runs)
-  async function createBatch() {
-    const { data, error } = await sb
-      .from("disbursement_batches")
-      .insert({ created_by: state.user.id })
-      .select()
-      .single();
-    if (error) return null;
-    return data.id;
+  // ==========================================================================
+  //  PAYMENT ENTRY — replaces instant "mark paid": input the payment details,
+  //  attach the transfer proof, optionally AI-verify it, then save the batch.
+  //  items: [{ type, r }]
+  // ==========================================================================
+  function openPaymentModal(items) {
+    const totals = {};
+    items.forEach((it) => {
+      const cur = TYPES[it.type].currency(it.r) || "IDR";
+      totals[cur] = (totals[cur] || 0) + Number(TYPES[it.type].amount(it.r) || 0);
+    });
+    const curs = Object.keys(totals);
+    const totalStr = Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ");
+    const singleCur = curs.length === 1 ? curs[0] : null;
+    const today = new Date().toISOString().slice(0, 10);
+    const curOptions = [...new Set(["IDR", ...curs, "USD", "SGD", "EUR"])];
+
+    const card = el(`
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:12px">
+          <div>
+            <h3 style="margin:0 0 4px">💸 Input payment</h3>
+            <span class="hint">${items.length} item${items.length === 1 ? "" : "s"} · expected total <b>${totalStr}</b></span>
+          </div>
+          <button class="btn btn-ghost btn-sm" data-close>✕</button>
+        </div>
+        <div class="form-grid" style="margin-top:16px">
+          <label>Payment date
+            <input name="paid_date" type="date" value="${today}" required />
+          </label>
+          <label>Amount transferred
+            <input name="amount" type="number" step="0.01" min="0" value="${singleCur ? totals[singleCur] : ""}" required />
+          </label>
+          <label>Currency
+            <select name="currency">${curOptions.map((c) => `<option ${c === (singleCur || "IDR") ? "selected" : ""}>${c}</option>`).join("")}</select>
+          </label>
+          <label>Bank reference no. <span class="hint">(optional)</span>
+            <input name="bank_ref" placeholder="Transfer reference" />
+          </label>
+          <label class="full">Note <span class="hint">(optional)</span>
+            <input name="note" placeholder="e.g. transferred via BCA mobile" />
+          </label>
+          <div class="full">
+            <label>Transfer proof (bukti transfer)</label>
+            <label class="file-drop">
+              <input type="file" name="proof" accept="image/*,.pdf" />
+              <span id="proof-label">📎 Click to attach the transfer receipt</span>
+            </label>
+            <button type="button" class="btn btn-ghost btn-sm hidden" id="proof-verify" style="margin-top:8px">✨ Verify receipt against the fields</button>
+            <div id="verify-box" class="verify-box hidden"></div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" id="pay-save">💾 Save payment &amp; mark paid</button>
+          <button class="btn btn-ghost" data-close>Cancel</button>
+        </div>
+        <p id="pay-msg" class="msg"></p>
+      </div>`);
+
+    openModal(card);
+
+    const fileInput = card.querySelector("input[name=proof]");
+    const verifyBtn = card.querySelector("#proof-verify");
+    fileInput.addEventListener("change", () => {
+      const f = fileInput.files[0];
+      card.querySelector("#proof-label").innerHTML = f
+        ? '<span class="file-name">📎 ' + esc(f.name) + "</span> — click to change"
+        : "📎 Click to attach the transfer receipt";
+      verifyBtn.classList.toggle("hidden", !f);
+    });
+    verifyBtn.addEventListener("click", () => verifyPaymentProof(card, fileInput.files[0], items));
+    card.querySelector("#pay-save").addEventListener("click", () => savePayment(card, items, fileInput.files[0]));
   }
 
-  async function markPaid(type, id) {
-    const batchId = await createBatch();
-    const { error } = await sb
-      .from(TYPES[type].table)
-      .update({ paid_at: new Date().toISOString(), paid_by: state.user.id, ...(batchId ? { batch_id: batchId } : {}) })
-      .eq("id", id);
-    if (error) { toast(error.message, "error"); return false; }
-    toast("Marked as paid 💸");
-    route(); // refresh whichever view is active
-    return true;
+  async function verifyPaymentProof(card, file, items) {
+    if (!file) return;
+    const box = card.querySelector("#verify-box");
+    const btn = card.querySelector("#proof-verify");
+    btn.disabled = true;
+    box.classList.remove("hidden");
+    box.innerHTML = "✨ Reading the receipt…";
+
+    try {
+      const b64 = await new Promise((res, rej) => {
+        const rd = new FileReader();
+        rd.onload = () => res(String(rd.result).split(",")[1]);
+        rd.onerror = rej;
+        rd.readAsDataURL(file);
+      });
+      const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
+      const { data: p, error } = await sb.functions.invoke("swift-action", {
+        body: { data: b64, media_type: mediaType, mode: "payment_proof" },
+      });
+      if (error) {
+        let detail = "";
+        try { detail = (await error.context?.json())?.error || ""; } catch { /* ignore */ }
+        throw new Error(detail || "Verification unavailable — is the parse function updated to v3?");
+      }
+      if (p?.error) throw new Error(p.error);
+
+      // compare with the entered fields
+      const enteredAmt = Number(card.querySelector("input[name=amount]").value) || 0;
+      const enteredCur = card.querySelector("select[name=currency]").value;
+      const enteredDate = card.querySelector("input[name=paid_date]").value;
+      const checks = [];
+
+      if (p.amount != null) {
+        const diff = Math.abs(Number(p.amount) - enteredAmt);
+        const ok = enteredAmt > 0 && (diff <= 1 || diff / enteredAmt < 0.005);
+        checks.push([ok, `Amount on receipt: ${money(p.amount, p.currency || enteredCur)}` + (ok ? " — matches" : ` — you entered ${money(enteredAmt, enteredCur)}`)]);
+      } else checks.push([null, "Amount: not readable on the receipt"]);
+
+      if (p.currency) {
+        const ok = String(p.currency).toUpperCase() === enteredCur;
+        checks.push([ok, `Currency on receipt: ${p.currency}` + (ok ? "" : ` — you selected ${enteredCur}`)]);
+      }
+
+      if (p.date) {
+        const ok = p.date === enteredDate;
+        checks.push([ok, `Date on receipt: ${fmtDate(p.date)}` + (ok ? " — matches" : ` — you entered ${fmtDate(enteredDate)}`)]);
+      } else checks.push([null, "Date: not readable on the receipt"]);
+
+      // destination account vs the items' expected accounts
+      const expectedAccounts = [...new Set(items.map((it) => it.r.bank_account_number).filter(Boolean))];
+      if (p.to_account) {
+        const norm = (s) => String(s).replace(/\D+/g, "");
+        const ok = expectedAccounts.length ? expectedAccounts.some((a) => norm(a) === norm(p.to_account)) : null;
+        checks.push([ok, `Destination: ${p.bank ? p.bank + " " : ""}${p.to_account}${p.to_name ? " (" + p.to_name + ")" : ""}` + (ok === false ? " — does not match the request's account" : ok ? " — matches" : "")]);
+      }
+      if (p.reference) {
+        const refInput = card.querySelector("input[name=bank_ref]");
+        if (!refInput.value.trim()) refInput.value = p.reference;
+        checks.push([true, `Reference: ${p.reference}`]);
+      }
+
+      card._verification = { extracted: p, checks: checks.map(([ok, text]) => ({ ok, text })) };
+      box.innerHTML = checks
+        .map(([ok, text]) => `<div class="${ok === true ? "ok" : ok === false ? "bad" : "warn"}">${ok === true ? "✓" : ok === false ? "✗" : "•"} ${esc(text)}</div>`)
+        .join("");
+      const bad = checks.filter(([ok]) => ok === false).length;
+      box.append(el(`<div style="margin-top:6px;font-weight:700" class="${bad ? "bad" : "ok"}">${bad ? bad + " mismatch(es) — please double-check before saving" : "Receipt matches the entered details ✓"}</div>`));
+    } catch (err) {
+      box.innerHTML = `<div class="bad">✗ ${esc(err.message || "Could not verify the receipt.")}</div>`;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function savePayment(card, items, file) {
+    const msg = card.querySelector("#pay-msg");
+    const saveBtn = card.querySelector("#pay-save");
+    const paidDate = card.querySelector("input[name=paid_date]").value;
+    const amount = Number(card.querySelector("input[name=amount]").value);
+    const currency = card.querySelector("select[name=currency]").value;
+    const bankRef = card.querySelector("input[name=bank_ref]").value.trim();
+    const note = card.querySelector("input[name=note]").value.trim();
+
+    if (!paidDate) { msg.textContent = "Enter the payment date."; msg.className = "msg error"; return; }
+    if (!amount || amount <= 0) { msg.textContent = "Enter the transferred amount."; msg.className = "msg error"; return; }
+    if (file && file.size > 10 * 1024 * 1024) { msg.textContent = "Proof file is over 10 MB."; msg.className = "msg error"; return; }
+
+    saveBtn.disabled = true;
+    msg.className = "msg"; msg.textContent = "Saving payment…";
+
+    try {
+      let proofPath = null;
+      if (file) {
+        const safe = file.name.replace(/[^\w.\-]+/g, "_").slice(-50);
+        proofPath = `${state.user.id}/${Date.now()}-${safe}`;
+        const up = await sb.storage.from("payment-proofs").upload(proofPath, file, { upsert: false });
+        if (up.error) throw up.error;
+      }
+
+      const { data: batch, error: bErr } = await sb
+        .from("disbursement_batches")
+        .insert({
+          created_by: state.user.id,
+          paid_date: paidDate,
+          amount,
+          currency,
+          bank_ref: bankRef || null,
+          note: note || null,
+          proof_path: proofPath,
+          verification: card._verification || null,
+        })
+        .select()
+        .single();
+      if (bErr) throw bErr;
+
+      const stamp = { paid_at: new Date(paidDate + "T12:00:00").toISOString(), paid_by: state.user.id, batch_id: batch.id };
+      const byType = {};
+      items.forEach((it) => (byType[it.type] = byType[it.type] || []).push(it.r.id));
+      for (const [type, ids] of Object.entries(byType)) {
+        const { error: uErr } = await sb.from(TYPES[type].table).update(stamp).in("id", ids);
+        if (uErr) throw uErr;
+      }
+
+      closeModal();
+      toast("Payment saved — marked paid 💸");
+      route();
+    } catch (err) {
+      msg.textContent = err.message || "Something went wrong.";
+      msg.className = "msg error";
+      saveBtn.disabled = false;
+    }
   }
 
   // ==========================================================================
@@ -2656,7 +2851,7 @@
               <td>${fmtDate(r.reviewed_at)}</td>
               <td class="amount">${amt != null ? money(amt, TYPES[type].currency(r)) : "—"}</td>
               <td class="paytiny">${payTo}</td>
-              <td><button class="btn btn-primary btn-sm mark-paid" data-type="${type}" data-id="${r.id}">Mark paid</button></td>
+              <td><button class="btn btn-primary btn-sm mark-paid" data-type="${type}" data-id="${r.id}">💸 Input payment</button></td>
             </tr>`;
         })
         .join("");
@@ -2672,7 +2867,7 @@
               <div class="dg-total"><div class="lbl">To pay</div><div class="val">${totalStr}</div></div>
               <div style="display:flex;gap:8px">
                 <button class="btn btn-ghost btn-sm print-group" data-uid="${uid}">🖨️ Print</button>
-                <button class="btn btn-success btn-sm mark-all-paid" data-uid="${uid}">✔ Mark all paid (${groupItems.length})</button>
+                <button class="btn btn-success btn-sm mark-all-paid" data-uid="${uid}">💸 Pay all (${groupItems.length})</button>
               </div>
             </div>
           </div>
@@ -2695,12 +2890,12 @@
         if (it) openDetail(it.r, true, nameMap, it.type);
       });
     });
-    // mark-paid buttons
+    // per-item payment entry
     $$(".mark-paid", root).forEach((b) =>
-      b.addEventListener("click", async (e) => {
+      b.addEventListener("click", (e) => {
         e.stopPropagation();
-        b.disabled = true;
-        await markPaid(b.dataset.type, b.dataset.id);
+        const it = items.find((x) => x.type === b.dataset.type && x.r.id === b.dataset.id);
+        if (it) openPaymentModal([it]);
       })
     );
     // print buttons (one printable payout sheet per employee)
@@ -2710,30 +2905,12 @@
         printDisbursement(profMap[b.dataset.uid] || {}, groups[b.dataset.uid] || []);
       })
     );
-    // mark ALL of one employee's items paid in one go
+    // pay ALL of one employee's items in one payment entry
     $$(".mark-all-paid", root).forEach((b) =>
-      b.addEventListener("click", async (e) => {
+      b.addEventListener("click", (e) => {
         e.stopPropagation();
-        const uid = b.dataset.uid;
-        const groupItems = groups[uid] || [];
-        if (!groupItems.length) return;
-        const who = (profMap[uid] && (profMap[uid].full_name || profMap[uid].email)) || "this employee";
-        if (!confirm(`Mark all ${groupItems.length} item(s) for ${who} as paid?`)) return;
-
-        b.disabled = true;
-        const batchId = await createBatch(); // one payment batch for the whole group
-        const stamp = { paid_at: new Date().toISOString(), paid_by: state.user.id, ...(batchId ? { batch_id: batchId } : {}) };
-        // batch per table
-        const byType = {};
-        groupItems.forEach((it) => (byType[it.type] = byType[it.type] || []).push(it.r.id));
-        let failed = null;
-        for (const [type, ids] of Object.entries(byType)) {
-          const { error: uErr } = await sb.from(TYPES[type].table).update(stamp).in("id", ids);
-          if (uErr) { failed = uErr; break; }
-        }
-        if (failed) { toast(failed.message, "error"); b.disabled = false; return; }
-        toast(`All items for ${who} marked paid 💸`);
-        renderDisburse();
+        const groupItems = groups[b.dataset.uid] || [];
+        if (groupItems.length) openPaymentModal(groupItems);
       })
     );
   }
