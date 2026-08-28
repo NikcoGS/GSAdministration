@@ -1189,6 +1189,16 @@
       .order("created_at", { ascending: false });
     if (error) { root.innerHTML = errorBox(error.message); return; }
 
+    // approved supplier purchases that have no receiving started yet
+    const { data: purchases } = await sb
+      .from("payment_requests")
+      .select("*")
+      .eq("request_type", "supplier")
+      .eq("status", "approved")
+      .order("reviewed_at", { ascending: false });
+    const linked = new Set((data || []).map((o) => o.payment_request_id).filter(Boolean));
+    const toReceive = (purchases || []).filter((p) => !linked.has(p.id));
+
     const f = state.recvFilter;
     const rows = (data || []).filter((r) =>
       f === "assigned" ? r.assigned_to === state.user.id :
@@ -1196,7 +1206,30 @@
     );
 
     const pillOpts = [["assigned", "Assigned to me"], ["mine", "Created by me"], ["all", "All"]];
-    let html = filterPills(f, pillOpts);
+    let html = "";
+
+    if (toReceive.length) {
+      html += `<div class="card panel" style="margin-bottom:16px">
+        <h3 style="margin:0 0 4px">📦 Approved purchases ready to receive</h3>
+        <p class="sub">These supplier payments were approved — start the receiving process when the goods arrive.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Ref / PO</th><th>Supplier</th><th>Purchase</th><th>Amount</th><th>Approved</th><th></th></tr></thead>
+          <tbody>${toReceive
+            .map(
+              (p) => `<tr>
+                <td>${esc(p.ref_number || "—")}</td>
+                <td>${esc(p.payee_name)}</td>
+                <td>${esc(p.title)}</td>
+                <td class="amount">${money(p.amount, p.currency)}</td>
+                <td>${fmtDate(p.reviewed_at)}</td>
+                <td><button class="btn btn-primary btn-sm start-recv" data-id="${p.id}">📥 Start receiving</button></td>
+              </tr>`
+            )
+            .join("")}</tbody></table></div>
+      </div>`;
+    }
+
+    html += filterPills(f, pillOpts);
 
     if (!rows.length) {
       html +=
@@ -1228,6 +1261,15 @@
       tr.addEventListener("click", () => {
         const r = rows.find((x) => x.id === tr.dataset.id);
         if (r) openReceivingDetail(r);
+      })
+    );
+    $$(".start-recv", root).forEach((b) =>
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const p = toReceive.find((x) => x.id === b.dataset.id);
+        if (!p) return;
+        state.prefillReceiving = p;
+        location.hash = "#newreceiving";
       })
     );
   }
@@ -1280,7 +1322,30 @@
       </form>`;
 
     const linesBox = $("#recv-lines");
-    addItemLine(linesBox); addItemLine(linesBox); addItemLine(linesBox);
+    const pre = state.prefillReceiving;
+    state.prefillReceiving = null;
+    if (pre) {
+      const form = $("#recv-form");
+      form._prefill = pre;
+      form.ref_number.value = pre.ref_number || "";
+      form.supplier.value = pre.payee_name || "";
+      form.notes.value = `From approved purchase: ${pre.title || ""}`.trim();
+      const preItems = Array.isArray(pre.items) ? pre.items : [];
+      preItems.forEach((it) => {
+        addItemLine(linesBox);
+        const row = linesBox.lastElementChild;
+        row.querySelector(".ln-item").value = it.item_name || "";
+        row.querySelector(".ln-qty").value = it.qty != null && it.qty > 0 ? it.qty : 1;
+        if (it.unit) row.querySelector(".ln-unit").value = it.unit;
+      });
+      if (!preItems.length) { addItemLine(linesBox); addItemLine(linesBox); addItemLine(linesBox); }
+      if (pre.invoice_path) {
+        $("#recv-file-label").innerHTML = "📎 The purchase's invoice/PO will be attached automatically — or click to attach a different file";
+      }
+      $("#recv-form .sub").textContent = "Started from an approved supplier purchase — check the lines, assign a checker, and create.";
+    } else {
+      addItemLine(linesBox); addItemLine(linesBox); addItemLine(linesBox);
+    }
     $("#recv-add-line").addEventListener("click", () => addItemLine(linesBox));
 
     const fi = $('#recv-form input[name=attachment]');
@@ -1390,6 +1455,19 @@
         const up = await sb.storage.from("receiving-files").upload(attachmentPath, file, { upsert: false });
         if (up.error) throw up.error;
       }
+      // started from an approved purchase and no new file chosen:
+      // carry the purchase's invoice/PO over so the checker can open it
+      if (!attachmentPath && form._prefill?.invoice_path) {
+        try {
+          const dl = await sb.storage.from("invoices").download(form._prefill.invoice_path);
+          if (dl.data) {
+            const orig = form._prefill.invoice_path.split("/").pop();
+            attachmentPath = `${state.user.id}/${Date.now()}-${orig}`;
+            const cp = await sb.storage.from("receiving-files").upload(attachmentPath, dl.data, { upsert: false });
+            if (cp.error) attachmentPath = null;
+          }
+        } catch { /* attachment copy is best-effort */ }
+      }
       const { data: order, error: oErr } = await sb
         .from("receiving_orders")
         .insert({
@@ -1400,6 +1478,7 @@
           assigned_to: form.assigned_to.value,
           notes: form.notes.value.trim() || null,
           attachment_path: attachmentPath,
+          payment_request_id: form._prefill?.id || null,
         })
         .select().single();
       if (oErr) throw oErr;
@@ -1443,6 +1522,7 @@
           <div class="detail-row"><span class="k">Site</span><span class="v">${esc(r.location)}</span></div>
           <div class="detail-row"><span class="k">Created by</span><span class="v">${esc(userName(r.created_by))}</span></div>
           <div class="detail-row"><span class="k">Assigned checker</span><span class="v">${esc(userName(r.assigned_to))}</span></div>
+          ${r.payment_request_id ? '<div class="detail-row"><span class="k">Source</span><span class="v">📦 From approved supplier purchase</span></div>' : ""}
           ${r.notes ? `<div class="detail-row"><span class="k">Notes</span><span class="v">${esc(r.notes)}</span></div>` : ""}
           ${r.status === "confirmed" ? `<div class="detail-row"><span class="k">Confirmed</span><span class="v">${esc(userName(r.confirmed_by))} · ${fmtDate(r.confirmed_at)}</span></div>` : ""}
         </div>
