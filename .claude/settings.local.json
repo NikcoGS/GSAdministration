@@ -8,7 +8,8 @@
       "mcp__59c9bf16-079a-4a57-b1e1-ee6bdc813492__search_files",
       "Bash(git add *)",
       "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Split payment requests into supplier \\(invoice parsing + FX to IDR\\) and expense types *)",
-      "Bash(pbcopy)"
+      "Bash(pbcopy)",
+      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Purchase rows in ready-to-receive list open the payment detail popup *)"
     ]
   }
 }

@@ -1216,7 +1216,7 @@
           <thead><tr><th>Ref / PO</th><th>Supplier</th><th>Purchase</th><th>Amount</th><th>Approved</th><th></th></tr></thead>
           <tbody>${toReceive
             .map(
-              (p) => `<tr>
+              (p) => `<tr data-pid="${p.id}">
                 <td>${esc(p.ref_number || "—")}</td>
                 <td>${esc(p.payee_name)}</td>
                 <td>${esc(p.title)}</td>
@@ -1270,6 +1270,16 @@
         if (!p) return;
         state.prefillReceiving = p;
         location.hash = "#newreceiving";
+      })
+    );
+    // purchase rows open the payment request's detail popup
+    const dirNameMap = {};
+    (state.users || []).forEach((u) => (dirNameMap[u.id] = u.full_name || u.email));
+    $$("tr[data-pid]", root).forEach((tr) =>
+      tr.addEventListener("click", (e) => {
+        if (e.target.closest(".start-recv")) return;
+        const p = toReceive.find((x) => x.id === tr.dataset.pid);
+        if (p) openDetail(p, state.profile.role === "admin", dirNameMap, "payment");
       })
     );
   }
