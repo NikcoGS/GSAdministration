@@ -241,6 +241,15 @@
   $$(".nav-item").forEach((n) => n.addEventListener("click", closeNav));
   window.addEventListener("hashchange", closeNav);
 
+  // delegated navigation for dynamically-rendered buttons (data-nav="#view")
+  document.addEventListener("click", (e) => {
+    const nav = e.target.closest("[data-nav]");
+    if (nav) {
+      e.preventDefault();
+      location.hash = nav.dataset.nav;
+    }
+  });
+
   function route() {
     if (!state.profile) return;
     let view = (location.hash || "#dashboard").slice(1);
@@ -323,7 +332,7 @@
         '<div class="card panel empty"><div class="big">🧾</div>' +
         "<h3>No payment requests yet</h3>" +
         '<p class="sub">Create your first request to get started.</p>' +
-        '<button class="btn btn-primary" onclick="location.hash=\'#new\'">➕ New Payment Request</button></div>';
+        '<button class="btn btn-primary" data-nav="#new">➕ New Payment Request</button></div>';
       return;
     }
 
@@ -398,7 +407,7 @@
         </div>
         <div class="modal-actions">
           <button type="submit" class="btn btn-primary">Submit request</button>
-          <button type="button" class="btn btn-ghost" onclick="location.hash='#dashboard'">Cancel</button>
+          <button type="button" class="btn btn-ghost" data-nav="#dashboard">Cancel</button>
         </div>
         <p id="pr-msg" class="msg"></p>
       </form>`;
@@ -541,7 +550,7 @@
         </div>
         <div class="modal-actions">
           <button type="submit" class="btn btn-primary">Submit request</button>
-          <button type="button" class="btn btn-ghost" onclick="location.hash='#dashboard'">Cancel</button>
+          <button type="button" class="btn btn-ghost" data-nav="#dashboard">Cancel</button>
         </div>
         <p id="sp-msg" class="msg"></p>
       </form>`;
@@ -770,7 +779,7 @@
         '<div class="card panel empty"><div class="big">🚗</div>' +
         "<h3>No trip claims yet</h3>" +
         '<p class="sub">Submit your first trip reimbursement claim.</p>' +
-        '<button class="btn btn-primary" onclick="location.hash=\'#newtrip\'">➕ New Trip Claim</button></div>';
+        '<button class="btn btn-primary" data-nav="#newtrip">➕ New Trip Claim</button></div>';
       return;
     }
 
@@ -845,7 +854,7 @@
         </div>
         <div class="modal-actions">
           <button type="submit" class="btn btn-primary">Submit claim</button>
-          <button type="button" class="btn btn-ghost" onclick="location.hash='#trips'">Cancel</button>
+          <button type="button" class="btn btn-ghost" data-nav="#trips">Cancel</button>
         </div>
         <p id="trip-msg" class="msg"></p>
       </form>`;
@@ -948,7 +957,7 @@
         '<div class="card panel empty"><div class="big">🧾</div>' +
         "<h3>No petty cash claims yet</h3>" +
         '<p class="sub">Create a claim and add each expense as a line.</p>' +
-        '<button class="btn btn-primary" onclick="location.hash=\'#newpetty\'">➕ New Petty Cash</button></div>';
+        '<button class="btn btn-primary" data-nav="#newpetty">➕ New Petty Cash</button></div>';
       return;
     }
 
@@ -990,7 +999,7 @@
 
         <div class="modal-actions">
           <button type="submit" class="btn btn-primary">Submit claim</button>
-          <button type="button" class="btn btn-ghost" onclick="location.hash='#petty'">Cancel</button>
+          <button type="button" class="btn btn-ghost" data-nav="#petty">Cancel</button>
         </div>
         <p id="petty-msg" class="msg"></p>
       </form>`;
@@ -1213,14 +1222,13 @@
         <h3 style="margin:0 0 4px">📦 Approved purchases ready to receive</h3>
         <p class="sub">These supplier payments were approved — start the receiving process when the goods arrive.</p>
         <div class="table-wrap"><table>
-          <thead><tr><th>Ref / PO</th><th>Supplier</th><th>Purchase</th><th>Amount</th><th>Approved</th><th></th></tr></thead>
+          <thead><tr><th>Ref / PO</th><th>Supplier</th><th>Purchase</th><th>Approved</th><th></th></tr></thead>
           <tbody>${toReceive
             .map(
               (p) => `<tr data-pid="${p.id}">
                 <td>${esc(p.ref_number || "—")}</td>
                 <td>${esc(p.payee_name)}</td>
                 <td>${esc(p.title)}</td>
-                <td class="amount">${money(p.amount, p.currency)}</td>
                 <td>${fmtDate(p.reviewed_at)}</td>
                 <td><button class="btn btn-primary btn-sm start-recv" data-id="${p.id}">📥 Start receiving</button></td>
               </tr>`
@@ -1235,7 +1243,7 @@
       html +=
         '<div class="card panel empty"><div class="big">📥</div><h3>Nothing here</h3>' +
         '<p class="sub">No receiving orders in this filter.</p>' +
-        '<button class="btn btn-primary" onclick="location.hash=\'#newreceiving\'">➕ New Receiving</button></div>';
+        '<button class="btn btn-primary" data-nav="#newreceiving">➕ New Receiving</button></div>';
     } else {
       html += `<div class="card table-wrap"><table>
         <thead><tr><th>Ref / PO</th><th>Supplier</th><th>Site</th><th>Created by</th><th>Assigned to</th><th>Status</th></tr></thead>
@@ -1279,7 +1287,7 @@
       tr.addEventListener("click", (e) => {
         if (e.target.closest(".start-recv")) return;
         const p = toReceive.find((x) => x.id === tr.dataset.pid);
-        if (p) openDetail(p, state.profile.role === "admin", dirNameMap, "payment");
+        if (p) openDetail(p, state.profile.role === "admin", dirNameMap, "payment", { hidePrices: true });
       })
     );
   }
@@ -1326,7 +1334,7 @@
         <button type="button" class="btn btn-ghost btn-sm" id="recv-add-line">➕ Add item</button>
         <div class="modal-actions">
           <button type="submit" class="btn btn-primary">Create receiving</button>
-          <button type="button" class="btn btn-ghost" onclick="location.hash='#receiving'">Cancel</button>
+          <button type="button" class="btn btn-ghost" data-nav="#receiving">Cancel</button>
         </div>
         <p id="recv-msg" class="msg"></p>
       </form>`;
@@ -1718,7 +1726,7 @@
       html +=
         '<div class="card panel empty"><div class="big">🔄</div><h3>Nothing here</h3>' +
         '<p class="sub">No store movements in this filter.</p>' +
-        '<button class="btn btn-primary" onclick="location.hash=\'#newmovement\'">➕ New Movement</button></div>';
+        '<button class="btn btn-primary" data-nav="#newmovement">➕ New Movement</button></div>';
     } else {
       html += `<div class="card table-wrap"><table>
         <thead><tr><th>Route</th><th>Created by</th><th>Assigned to</th><th>Date</th><th>Status</th></tr></thead>
@@ -1778,7 +1786,7 @@
         <button type="button" class="btn btn-ghost btn-sm" id="mov-add-line">➕ Add item</button>
         <div class="modal-actions">
           <button type="submit" class="btn btn-primary">Create movement</button>
-          <button type="button" class="btn btn-ghost" onclick="location.hash='#movements'">Cancel</button>
+          <button type="button" class="btn btn-ghost" data-nav="#movements">Cancel</button>
         </div>
         <p id="mov-msg" class="msg"></p>
       </form>`;
@@ -2291,7 +2299,7 @@
     },
   };
 
-  async function openDetail(r, isAdmin, nameMap = {}, type = "payment") {
+  async function openDetail(r, isAdmin, nameMap = {}, type = "payment", opts = {}) {
     const requester = nameMap[r.requester_id] || (r.requester_id === state.user.id ? "You" : "—");
     let rows, files;
 
@@ -2328,8 +2336,10 @@
         [isSupplier ? "Supplier" : "Payee / Vendor", r.payee_name],
       ];
       if (isSupplier && r.ref_number) rows.push(["PO / Invoice no", r.ref_number]);
-      rows.push(["Amount", money(r.amount, r.currency)]);
-      if (r.idr_estimate) rows.push(["≈ IDR estimate", money(r.idr_estimate, "IDR") + (r.fx_rate ? ` (1 ${r.currency} ≈ ${Math.round(r.fx_rate).toLocaleString()} IDR)` : "")]);
+      if (!opts.hidePrices) {
+        rows.push(["Amount", money(r.amount, r.currency)]);
+        if (r.idr_estimate) rows.push(["≈ IDR estimate", money(r.idr_estimate, "IDR") + (r.fx_rate ? ` (1 ${r.currency} ≈ ${Math.round(r.fx_rate).toLocaleString()} IDR)` : "")]);
+      }
       rows.push(
         ["Transfer date", fmtDate(r.transaction_date)],
         ["Bank name", r.bank_name || "—"],
@@ -2369,25 +2379,36 @@
 
     openModal(card);
 
-    // supplier payment: show the priced item lines from the request
+    // supplier payment: show the item lines from the request
     if (type === "payment" && r.request_type === "supplier" && Array.isArray(r.items) && r.items.length) {
       const ls = card.querySelector("#lines-slot");
-      const lineRows = r.items
-        .map(
-          (it, i) =>
-            `<tr><td>${i + 1}</td><td>${esc(it.item_name)}</td><td class="amount">${esc(it.qty)}</td>` +
-            `<td class="amount">${money(it.unit_price, r.currency)}</td>` +
-            `<td class="amount">${money((Number(it.qty) || 1) * (Number(it.unit_price) || 0), r.currency)}</td></tr>`
-        )
-        .join("");
-      ls.innerHTML =
-        '<div class="table-wrap"><table><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead><tbody>' +
-        lineRows +
-        `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">Total</td><td class="amount" style="font-weight:700">${money(r.amount, r.currency)}</td></tr>` +
-        (r.idr_estimate
-          ? `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">≈ IDR estimate</td><td class="amount" style="font-weight:700">${money(r.idr_estimate, "IDR")}</td></tr>`
-          : "") +
-        "</tbody></table></div>";
+      if (opts.hidePrices) {
+        // receiving context: items and quantities only, no money
+        const lineRows = r.items
+          .map((it, i) => `<tr><td>${i + 1}</td><td>${esc(it.item_name)}</td><td class="amount">${esc(it.qty)}</td></tr>`)
+          .join("");
+        ls.innerHTML =
+          '<div class="table-wrap"><table><thead><tr><th>#</th><th>Item</th><th>Qty</th></tr></thead><tbody>' +
+          lineRows +
+          "</tbody></table></div>";
+      } else {
+        const lineRows = r.items
+          .map(
+            (it, i) =>
+              `<tr><td>${i + 1}</td><td>${esc(it.item_name)}</td><td class="amount">${esc(it.qty)}</td>` +
+              `<td class="amount">${money(it.unit_price, r.currency)}</td>` +
+              `<td class="amount">${money((Number(it.qty) || 1) * (Number(it.unit_price) || 0), r.currency)}</td></tr>`
+          )
+          .join("");
+        ls.innerHTML =
+          '<div class="table-wrap"><table><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead><tbody>' +
+          lineRows +
+          `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">Total</td><td class="amount" style="font-weight:700">${money(r.amount, r.currency)}</td></tr>` +
+          (r.idr_estimate
+            ? `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">≈ IDR estimate</td><td class="amount" style="font-weight:700">${money(r.idr_estimate, "IDR")}</td></tr>`
+            : "") +
+          "</tbody></table></div>";
+      }
     }
 
     // petty cash: load line items + per-line receipt links
@@ -2454,7 +2475,7 @@
     }
 
     // Admin: mark an approved & unpaid item as paid (disbursed)
-    if (isAdmin && r.status === "approved" && !r.paid_at) {
+    if (isAdmin && r.status === "approved" && !r.paid_at && !opts.hidePrices) {
       const pay = el('<button class="btn btn-primary">💸 Mark as paid</button>');
       pay.addEventListener("click", async () => {
         pay.disabled = true;

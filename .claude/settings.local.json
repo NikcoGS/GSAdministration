@@ -9,7 +9,10 @@
       "Bash(git add *)",
       "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Split payment requests into supplier \\(invoice parsing + FX to IDR\\) and expense types *)",
       "Bash(pbcopy)",
-      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Purchase rows in ready-to-receive list open the payment detail popup *)"
+      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Purchase rows in ready-to-receive list open the payment detail popup *)",
+      "Bash(ruby -i -pe '$_ = $_.gsub\\(/onclick=\"location\\\\.hash=\\\\\\\\?\\\\x27\\(#\\\\w+\\)\\\\\\\\?\\\\x27\"/, %q{data-nav=\"\\\\1\"}\\)' app.js)",
+      "Bash(git restore *)",
+      "Bash(ruby -E utf-8:utf-8 -e ' *)"
     ]
   }
 }
