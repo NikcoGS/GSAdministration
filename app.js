@@ -332,13 +332,28 @@
   }
 
   // ==========================================================================
-  //  VIEW: NEW REQUEST
+  //  VIEW: NEW REQUEST — split into Supplier payment / Expenses payment
   // ==========================================================================
   function renderNewRequest() {
     const root = $("#view-root");
+    const t = state.payType || "expense";
+    root.innerHTML = `
+      <div class="seg">
+        <button data-pt="supplier" class="${t === "supplier" ? "active" : ""}">🏭 Supplier payment</button>
+        <button data-pt="expense" class="${t === "expense" ? "active" : ""}">🧾 Expenses payment</button>
+      </div>
+      <div id="pay-form-slot"></div>`;
+    $$(".seg button", root).forEach((b) =>
+      b.addEventListener("click", () => { state.payType = b.dataset.pt; renderNewRequest(); })
+    );
+    if (t === "supplier") renderSupplierForm($("#pay-form-slot"));
+    else renderExpenseForm($("#pay-form-slot"));
+  }
+
+  function renderExpenseForm(root) {
     root.innerHTML = `
       <form id="pr-form" class="card panel" style="max-width:820px">
-        <h3>New Payment Request</h3>
+        <h3>New Expenses Payment</h3>
         <p class="sub">Fill in the payment details and attach the invoice or bill.</p>
         <div class="form-grid">
           <label class="full">Purpose / Title
@@ -446,6 +461,286 @@
       if (error) throw error;
 
       toast("Payment request submitted ✔");
+      location.hash = "#dashboard";
+    } catch (err) {
+      msg.textContent = err.message || "Something went wrong.";
+      msg.className = "msg error";
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ==========================================================================
+  //  SUPPLIER PAYMENT — invoice/PO drop, priced item lines, FX -> IDR estimate
+  // ==========================================================================
+  const SP_CURRENCIES = ["IDR", "USD", "SGD", "EUR", "JPY", "CNY", "MYR"];
+  const fxCache = {};
+  async function fetchIdrRate(cur) {
+    if (cur === "IDR") return 1;
+    if (fxCache[cur]) return fxCache[cur];
+    try {
+      const r = await fetch("https://open.er-api.com/v6/latest/" + cur);
+      const d = await r.json();
+      const rate = d?.rates?.IDR;
+      if (rate > 0) { fxCache[cur] = rate; return rate; }
+    } catch { /* offline or blocked */ }
+    return null;
+  }
+
+  function renderSupplierForm(root) {
+    root.innerHTML = `
+      <form id="sp-form" class="card panel" style="max-width:900px">
+        <h3>New Supplier Payment</h3>
+        <p class="sub">Drop the supplier invoice or PO — items and prices can be read automatically.</p>
+        <div class="form-grid">
+          <label class="full">Purpose / Title
+            <input name="title" required placeholder="e.g. Golf balls restock — PO 0712" />
+          </label>
+          <label>Supplier name
+            <input name="payee_name" required placeholder="Supplier / vendor" />
+          </label>
+          <label>PO / Invoice number
+            <input name="ref_number" placeholder="e.g. INV-2026-0815" />
+          </label>
+          <label>Currency
+            <select name="currency">${SP_CURRENCIES.map((c) => `<option ${c === "IDR" ? "selected" : ""}>${c}</option>`).join("")}</select>
+          </label>
+          <label>Transaction / transfer date
+            <input name="transaction_date" type="date" />
+          </label>
+          <label>Bank name
+            <input name="bank_name" placeholder="Supplier's bank" />
+          </label>
+          <label>Bank account name
+            <input name="bank_account_name" placeholder="Account holder name" />
+          </label>
+          <label class="full">Bank account number
+            <input name="bank_account_number" placeholder="Account number to transfer to" />
+          </label>
+          <label class="full">Notes / details
+            <textarea name="description" placeholder="Any extra detail the approver should know"></textarea>
+          </label>
+          <div class="full">
+            <label>Invoice / PO attachment</label>
+            <label class="file-drop">
+              <input type="file" name="invoice" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif" />
+              <span id="sp-file-label">📎 Click to attach the supplier invoice or PO</span>
+            </label>
+            <button type="button" class="btn btn-ghost btn-sm hidden" id="sp-parse" style="margin-top:8px">✨ Read items &amp; prices from invoice</button>
+          </div>
+        </div>
+        <div class="ln4-head"><span>Item</span><span>Qty</span><span>Unit price</span><span>Line total</span><span></span></div>
+        <div id="sp-lines"></div>
+        <button type="button" class="btn btn-ghost btn-sm" id="sp-add-line">➕ Add item</button>
+        <div class="grand">
+          <span>Total <span class="fx-hint" id="sp-fx-hint"></span></span>
+          <span style="text-align:right">
+            <span class="amount" id="sp-total">IDR 0</span>
+            <div class="fx-hint" id="sp-idr-est"></div>
+          </span>
+        </div>
+        <div class="modal-actions">
+          <button type="submit" class="btn btn-primary">Submit request</button>
+          <button type="button" class="btn btn-ghost" onclick="location.hash='#dashboard'">Cancel</button>
+        </div>
+        <p id="sp-msg" class="msg"></p>
+      </form>`;
+
+    const linesBox = $("#sp-lines");
+    const addSpLine = () => {
+      const row = el(`
+        <div class="ln4-row">
+          <input type="text" class="ln-item" placeholder="Item name" />
+          <input type="number" class="ln-qty" step="0.01" min="0" placeholder="1" />
+          <input type="number" class="ln-price" step="0.01" min="0" placeholder="0" />
+          <span class="ln-line-total">—</span>
+          <button type="button" class="ln-del" title="Remove line">✕</button>
+        </div>`);
+      row.querySelector(".ln-qty").addEventListener("input", recomputeSp);
+      row.querySelector(".ln-price").addEventListener("input", recomputeSp);
+      row.querySelector(".ln-del").addEventListener("click", () => { row.remove(); recomputeSp(); });
+      linesBox.append(row);
+      return row;
+    };
+    addSpLine(); addSpLine(); addSpLine();
+    $("#sp-add-line").addEventListener("click", () => addSpLine());
+    $("#sp-form")._addSpLine = addSpLine;
+
+    $('#sp-form select[name=currency]').addEventListener("change", recomputeSp);
+
+    const fi = $('#sp-form input[name=invoice]');
+    fi.addEventListener("change", () => {
+      const f = fi.files[0];
+      $("#sp-file-label").innerHTML = f ? '<span class="file-name">📎 ' + esc(f.name) + "</span> — click to change" : "📎 Click to attach the supplier invoice or PO";
+      $("#sp-parse").classList.toggle("hidden", !f);
+    });
+    $("#sp-parse").addEventListener("click", () => parseInvoice(fi.files[0]));
+
+    $("#sp-form").addEventListener("submit", submitSupplier);
+  }
+
+  function spLineTotals() {
+    let total = 0;
+    $$("#sp-lines .ln4-row").forEach((row) => {
+      const qty = Number(row.querySelector(".ln-qty").value) || 0;
+      const price = Number(row.querySelector(".ln-price").value) || 0;
+      const line = qty * price;
+      total += line;
+      row.querySelector(".ln-line-total").textContent = line ? line.toLocaleString() : "—";
+    });
+    return total;
+  }
+
+  async function recomputeSp() {
+    const form = $("#sp-form");
+    if (!form) return;
+    const cur = form.currency.value;
+    const total = spLineTotals();
+    $("#sp-total").textContent = money(total, cur);
+    const est = $("#sp-idr-est");
+    const hint = $("#sp-fx-hint");
+    if (cur === "IDR" || !total) { est.textContent = ""; hint.textContent = ""; form._idrEstimate = null; form._fxRate = null; return; }
+    est.textContent = "fetching IDR estimate…";
+    const rate = await fetchIdrRate(cur);
+    if (form.currency.value !== cur) return; // currency changed meanwhile
+    if (rate) {
+      form._fxRate = rate;
+      form._idrEstimate = Math.round(total * rate);
+      est.textContent = "≈ " + money(form._idrEstimate, "IDR");
+      hint.textContent = `(1 ${cur} ≈ ${Math.round(rate).toLocaleString()} IDR)`;
+    } else {
+      form._fxRate = null; form._idrEstimate = null;
+      est.textContent = "(IDR estimate unavailable)";
+      hint.textContent = "";
+    }
+  }
+
+  async function parseInvoice(file) {
+    const msg = $("#sp-msg");
+    const btn = $("#sp-parse");
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) { msg.textContent = "File too large to read automatically (max 8 MB)."; msg.className = "msg error"; return; }
+
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = "✨ Reading invoice…";
+    msg.className = "msg"; msg.textContent = "";
+
+    try {
+      const b64 = await new Promise((res, rej) => {
+        const rd = new FileReader();
+        rd.onload = () => res(String(rd.result).split(",")[1]);
+        rd.onerror = rej;
+        rd.readAsDataURL(file);
+      });
+      const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
+
+      const { data: parsed, error } = await sb.functions.invoke("swift-action", {
+        body: { data: b64, media_type: mediaType, mode: "invoice" },
+      });
+      if (error) {
+        let detail = "";
+        try { detail = (await error.context?.json())?.error || ""; } catch { /* ignore */ }
+        throw new Error(detail || "Invoice reading is unavailable — is the parse function deployed with the latest code?");
+      }
+      if (parsed?.error) throw new Error(parsed.error);
+
+      const form = $("#sp-form");
+      if (parsed.supplier && !form.payee_name.value.trim()) form.payee_name.value = parsed.supplier;
+      if (parsed.ref_number && !form.ref_number.value.trim()) form.ref_number.value = parsed.ref_number;
+      if (parsed.supplier && !form.title.value.trim()) form.title.value = `Supplier payment — ${parsed.supplier}`;
+
+      const cur = String(parsed.currency || "IDR").toUpperCase();
+      if (![...form.currency.options].some((o) => o.value === cur)) {
+        form.currency.append(el(`<option>${esc(cur)}</option>`));
+      }
+      form.currency.value = cur;
+
+      const items = Array.isArray(parsed.items) ? parsed.items : [];
+      if (!items.length) { msg.textContent = "No priced items found — enter them manually."; msg.className = "msg error"; return; }
+
+      const linesBox = $("#sp-lines");
+      $$(".ln4-row", linesBox).forEach((row) => {
+        const filled = row.querySelector(".ln-item").value.trim() || row.querySelector(".ln-price").value;
+        if (!filled) row.remove();
+      });
+      items.forEach((it) => {
+        const row = form._addSpLine();
+        row.querySelector(".ln-item").value = it.item_name || "";
+        row.querySelector(".ln-qty").value = it.qty != null && it.qty > 0 ? it.qty : 1;
+        row.querySelector(".ln-price").value = it.unit_price != null ? it.unit_price : "";
+      });
+      if (parsed.fx_rate) fxCache[cur] = parsed.fx_rate;
+      await recomputeSp();
+
+      msg.textContent = `Read ${items.length} item${items.length === 1 ? "" : "s"} from the invoice — verify prices before submitting.` + (parsed.fx_error ? " (" + parsed.fx_error + ")" : "");
+      msg.className = "msg ok";
+      toast(`✨ ${items.length} items read`);
+    } catch (err) {
+      msg.textContent = err.message || "Could not read the invoice.";
+      msg.className = "msg error";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+
+  async function submitSupplier(e) {
+    e.preventDefault();
+    const form = e.target;
+    const btn = form.querySelector("button[type=submit]");
+    const msg = $("#sp-msg");
+    const file = form.invoice.files[0];
+    if (file && file.size > 10 * 1024 * 1024) { msg.textContent = "File is larger than 10 MB."; msg.className = "msg error"; return; }
+
+    // collect priced lines
+    const items = [];
+    for (const row of $$("#sp-lines .ln4-row")) {
+      const name = row.querySelector(".ln-item").value.trim();
+      const qty = Number(row.querySelector(".ln-qty").value) || 0;
+      const price = Number(row.querySelector(".ln-price").value) || 0;
+      if (!name && !price) continue;
+      if (!name) { msg.textContent = "Every line needs an item name."; msg.className = "msg error"; return; }
+      items.push({ item_name: name, qty: qty || 1, unit_price: price });
+    }
+    if (!items.length) { msg.textContent = "Add at least one item line."; msg.className = "msg error"; return; }
+
+    const total = items.reduce((s, it) => s + it.qty * it.unit_price, 0);
+    const cur = form.currency.value;
+
+    btn.disabled = true; msg.className = "msg"; msg.textContent = "Submitting…";
+    try {
+      let invoicePath = null;
+      if (file) {
+        const safe = file.name.replace(/[^\w.\-]+/g, "_").slice(-60);
+        invoicePath = `${state.user.id}/${Date.now()}-${safe}`;
+        const up = await sb.storage.from("invoices").upload(invoicePath, file, { cacheControl: "3600", upsert: false });
+        if (up.error) throw up.error;
+      }
+
+      const payload = {
+        requester_id: state.user.id,
+        request_type: "supplier",
+        title: form.title.value.trim(),
+        payee_name: form.payee_name.value.trim(),
+        ref_number: form.ref_number.value.trim() || null,
+        amount: total,
+        currency: cur,
+        fx_rate: cur === "IDR" ? null : form._fxRate || null,
+        idr_estimate: cur === "IDR" ? null : form._idrEstimate || null,
+        items,
+        transaction_date: form.transaction_date.value || null,
+        bank_name: form.bank_name.value.trim() || null,
+        bank_account_name: form.bank_account_name.value.trim() || null,
+        bank_account_number: form.bank_account_number.value.trim() || null,
+        description: form.description.value.trim() || null,
+        invoice_path: invoicePath,
+      };
+
+      const { error } = await sb.from("payment_requests").insert(payload);
+      if (error) throw error;
+
+      toast("Supplier payment request submitted ✔");
       location.hash = "#dashboard";
     } catch (err) {
       msg.textContent = err.message || "Something went wrong.";
@@ -1826,9 +2121,9 @@
         (r) => `
         <tr data-id="${r.id}">
           ${isAdmin ? `<td>${esc(nameMap[r.requester_id] || "—")}</td>` : ""}
-          <td>${esc(r.title)}</td>
+          <td>${r.request_type === "supplier" ? '<span class="type-tag payment">Supplier</span> ' : ""}${esc(r.title)}</td>
           <td>${esc(r.payee_name)}</td>
-          <td class="amount">${money(r.amount, r.currency)}</td>
+          <td class="amount">${money(r.amount, r.currency)}${r.idr_estimate ? `<div class="paytiny">≈ ${money(r.idr_estimate, "IDR")}</div>` : ""}</td>
           <td>${fmtDate(r.transaction_date || r.created_at)}</td>
           <td><span class="badge ${r.status}">${r.status}</span></td>
         </tr>`
@@ -1936,16 +2231,22 @@
       ];
       files = [];
     } else {
+      const isSupplier = r.request_type === "supplier";
       rows = [
         ["Requester", requester],
-        ["Payee / Vendor", r.payee_name],
-        ["Amount", money(r.amount, r.currency)],
+        ["Type", isSupplier ? "Supplier payment" : "Expenses payment"],
+        [isSupplier ? "Supplier" : "Payee / Vendor", r.payee_name],
+      ];
+      if (isSupplier && r.ref_number) rows.push(["PO / Invoice no", r.ref_number]);
+      rows.push(["Amount", money(r.amount, r.currency)]);
+      if (r.idr_estimate) rows.push(["≈ IDR estimate", money(r.idr_estimate, "IDR") + (r.fx_rate ? ` (1 ${r.currency} ≈ ${Math.round(r.fx_rate).toLocaleString()} IDR)` : "")]);
+      rows.push(
         ["Transfer date", fmtDate(r.transaction_date)],
         ["Bank name", r.bank_name || "—"],
         ["Account name", r.bank_account_name || "—"],
         ["Account number", r.bank_account_number || "—"],
         ["Submitted", fmtDate(r.created_at)],
-      ];
+      );
       if (r.description) rows.push(["Notes", r.description]);
       files = [{ label: "📎 View invoice / bill", bucket: "invoices", path: r.invoice_path }];
     }
@@ -1977,6 +2278,27 @@
       </div>`);
 
     openModal(card);
+
+    // supplier payment: show the priced item lines from the request
+    if (type === "payment" && r.request_type === "supplier" && Array.isArray(r.items) && r.items.length) {
+      const ls = card.querySelector("#lines-slot");
+      const lineRows = r.items
+        .map(
+          (it, i) =>
+            `<tr><td>${i + 1}</td><td>${esc(it.item_name)}</td><td class="amount">${esc(it.qty)}</td>` +
+            `<td class="amount">${money(it.unit_price, r.currency)}</td>` +
+            `<td class="amount">${money((Number(it.qty) || 1) * (Number(it.unit_price) || 0), r.currency)}</td></tr>`
+        )
+        .join("");
+      ls.innerHTML =
+        '<div class="table-wrap"><table><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead><tbody>' +
+        lineRows +
+        `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">Total</td><td class="amount" style="font-weight:700">${money(r.amount, r.currency)}</td></tr>` +
+        (r.idr_estimate
+          ? `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">≈ IDR estimate</td><td class="amount" style="font-weight:700">${money(r.idr_estimate, "IDR")}</td></tr>`
+          : "") +
+        "</tbody></table></div>";
+    }
 
     // petty cash: load line items + per-line receipt links
     if (type === "petty") {

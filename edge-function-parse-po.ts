@@ -1,15 +1,13 @@
 // ============================================================================
-// GS Operational System — Edge Function: parse-po
-// Reads a PO / supplier invoice (PDF or photo) with Claude and returns
-// { supplier, ref_number, items: [{ item_name, qty, unit }] }.
+// GS Operational System — Edge Function: parse-po  (deployed slug: swift-action)
+// v2 — two modes:
+//   * default (receiving): { supplier, ref_number, items:[{item_name, qty, unit}] }
+//   * mode "invoice" (supplier payment): also extracts prices + currency and
+//     converts to IDR using a live exchange rate.
 //
-// DEPLOY (Supabase Dashboard, no CLI needed):
-//   1. Dashboard → Edge Functions → Deploy a new function → "Via Editor"
-//   2. Name it exactly:  parse-po
-//   3. Replace the template code with THIS ENTIRE FILE → Deploy
-//   4. Edge Functions → parse-po → Secrets (or Settings → Secrets):
-//        add  ANTHROPIC_API_KEY = sk-ant-...   (your key — keep it secret)
-//   5. Keep "Verify JWT" ON (default) so only logged-in employees can call it.
+// TO UPDATE THE DEPLOYED FUNCTION (Supabase Dashboard):
+//   Edge Functions → parse-po (swift-action) → edit code → replace ALL code
+//   with THIS FILE → Deploy. Secret ANTHROPIC_API_KEY must stay set.
 // ============================================================================
 
 const CORS = {
@@ -23,7 +21,7 @@ const json = (obj: unknown, status = 200) =>
     headers: { ...CORS, "Content-Type": "application/json" },
   });
 
-const PROMPT = `This document is a supplier purchase order (PO) or invoice, possibly in Indonesian.
+const RECEIVING_PROMPT = `This document is a supplier purchase order (PO) or invoice, possibly in Indonesian.
 Extract:
 - "supplier": the supplier / vendor company name (string or null)
 - "ref_number": the PO number or invoice number (string or null)
@@ -34,11 +32,24 @@ Extract:
 Reply with ONLY the JSON object, no other text:
 {"supplier": ..., "ref_number": ..., "items": [...]}`;
 
+const INVOICE_PROMPT = `This document is a supplier invoice or purchase order, possibly in Indonesian.
+Extract:
+- "supplier": the supplier / vendor company name (string or null)
+- "ref_number": the invoice number or PO number (string or null)
+- "currency": the ISO 4217 currency code of the prices (e.g. "IDR", "USD", "SGD", "EUR", "JPY", "CNY"). Rupiah amounts written like "Rp 1.500.000" are "IDR".
+- "items": EVERY line item as {"item_name": string, "qty": number, "unit": string|null, "unit_price": number}
+  * unit_price is the price per unit in that currency (plain number, no separators)
+  * qty defaults to 1 if not stated
+  * exclude tax/shipping/discount/total rows from items, but if the document shows a grand total, put it in "total"
+- "total": the grand total amount in that currency (number or null)
+Reply with ONLY the JSON object, no other text:
+{"supplier": ..., "ref_number": ..., "currency": ..., "items": [...], "total": ...}`;
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
-    const { data, media_type } = await req.json();
+    const { data, media_type, mode } = await req.json();
     if (!data || !media_type) return json({ error: "Missing file data." }, 400);
 
     const key = Deno.env.get("ANTHROPIC_API_KEY");
@@ -52,6 +63,8 @@ Deno.serve(async (req) => {
         ? { type: "document", source: { type: "base64", media_type, data } }
         : { type: "image", source: { type: "base64", media_type, data } };
 
+    const prompt = mode === "invoice" ? INVOICE_PROMPT : RECEIVING_PROMPT;
+
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -62,7 +75,7 @@ Deno.serve(async (req) => {
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
         max_tokens: 3000,
-        messages: [{ role: "user", content: [fileBlock, { type: "text", text: PROMPT }] }],
+        messages: [{ role: "user", content: [fileBlock, { type: "text", text: prompt }] }],
       }),
     });
 
@@ -82,6 +95,39 @@ Deno.serve(async (req) => {
 
     const parsed = JSON.parse(m[0]);
     if (!Array.isArray(parsed.items)) parsed.items = [];
+
+    // invoice mode: convert foreign currency to IDR with a live rate
+    if (mode === "invoice") {
+      const cur = String(parsed.currency || "IDR").toUpperCase();
+      parsed.currency = cur;
+      const computedTotal = parsed.items.reduce(
+        (s: number, it: { qty?: number; unit_price?: number }) =>
+          s + (Number(it.qty) || 1) * (Number(it.unit_price) || 0),
+        0,
+      );
+      if (parsed.total == null || !(Number(parsed.total) > 0)) parsed.total = computedTotal;
+
+      if (cur !== "IDR") {
+        try {
+          const fx = await fetch("https://open.er-api.com/v6/latest/" + cur);
+          const fxData = await fx.json();
+          const rate = fxData?.rates?.IDR;
+          if (rate && Number(rate) > 0) {
+            parsed.fx_rate = Number(rate);
+            parsed.idr_total = Math.round(Number(parsed.total) * rate);
+            parsed.items = parsed.items.map((it: Record<string, unknown>) => ({
+              ...it,
+              idr_estimate: Math.round((Number(it.qty) || 1) * (Number(it.unit_price) || 0) * rate),
+            }));
+          } else {
+            parsed.fx_error = "Live IDR rate for " + cur + " unavailable.";
+          }
+        } catch (_e) {
+          parsed.fx_error = "Could not fetch a live exchange rate.";
+        }
+      }
+    }
+
     return json(parsed);
   } catch (e) {
     return json({ error: String((e as Error)?.message || e) }, 500);

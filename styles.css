@@ -217,6 +217,19 @@ details.batch-sec .card { margin: 8px 0 14px; }
 .ln3-head { padding: 4px 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; margin-top: 8px; }
 .ln3-row { margin-bottom: 8px; }
 
+/* priced line editor (supplier payment) */
+.ln4-head, .ln4-row {
+  display: grid;
+  grid-template-columns: 1fr 70px 120px 120px 36px;
+  gap: 10px;
+  align-items: center;
+}
+.ln4-head { padding: 4px 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; margin-top: 8px; }
+.ln4-row { margin-bottom: 8px; }
+.ln4-row .ln-line-total { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 13px; text-align: right; color: var(--muted); overflow: hidden; }
+.fx-hint { font-size: 13px; color: var(--muted); font-weight: 600; }
+@media (max-width: 720px) { .ln4-head { display: none; } .ln4-row { grid-template-columns: 1fr 56px 90px 80px 30px; } }
+
 /* receiving checklist in detail modal */
 .check-line { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; }
 .check-line input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--green-600); flex: none; }
