@@ -54,7 +54,11 @@ Extract:
 - "items": EVERY line item as {"item_name": string, "qty": number, "unit": string|null, "unit_price": number}
   * unit_price is the NET effective price per unit actually charged, in that currency (plain number, no separators, up to 2 decimals). If a line shows a discounted price, use the discounted price.
   * qty defaults to 1 if not stated
-  * IMPORTANT — document-level discounts (e.g. "Discount 5%") must be PRORATED into the unit prices proportionally, NOT added as a separate line. Example: unit price 1129 with a 5% document discount becomes unit_price 1072.55. After prorating, the items must add up to the payable grand total; if rounding leaves a difference of a few cents, adjust the last item's unit_price so the sum matches exactly.
+  * IMPORTANT — discounts are layered and must ALL end up inside the unit prices, never as separate lines:
+      1. LINE-level discounts (a discount shown on a specific item row) apply only to THAT item's unit_price.
+      2. DOCUMENT-level discounts (e.g. "Discount 5%", "Special discount Rp 500.000" on the total) are then PRORATED proportionally across ALL items, on top of any line-level discounts. Example: unit price 1129 with a 5% document discount becomes unit_price 1072.55.
+      3. If both exist, apply the line discount first, then prorate the document discount over the already-discounted prices.
+    After prorating, the items must add up to the payable grand total; if rounding leaves a difference of a few cents, adjust the last item's unit_price so the sum matches exactly.
   * DO include as separate lines when present: shipping / freight / handling charges, and tax (VAT / PPN) if added on top of item prices — these are real payable components, not discounts.
   * exclude subtotal, discount, and grand-total rows themselves from items
 - "total": the payable grand total in that currency, after discounts and charges (number or null)
