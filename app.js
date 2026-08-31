@@ -2230,7 +2230,11 @@
           ${isAdmin ? `<td>${esc(nameMap[r.requester_id] || "—")}</td>` : ""}
           <td>${r.request_type === "supplier" ? '<span class="type-tag payment">Supplier</span> ' : ""}${esc(r.title)}</td>
           <td>${esc(r.payee_name)}</td>
-          <td class="amount">${money(r.amount, r.currency)}${r.idr_estimate ? `<div class="paytiny">≈ ${money(r.idr_estimate, "IDR")}</div>` : ""}</td>
+          <td class="amount">${
+            r.idr_actual
+              ? `${money(r.idr_actual, "IDR")}<div class="paytiny">${money(r.amount, r.currency)} paid</div>`
+              : `${money(r.amount, r.currency)}${r.idr_estimate ? `<div class="paytiny">≈ ${money(r.idr_estimate, "IDR")}</div>` : ""}`
+          }</td>
           <td>${fmtDate(r.transaction_date || r.created_at)}</td>
           <td><span class="badge ${r.status}">${r.status}</span></td>
         </tr>`
@@ -2346,8 +2350,13 @@
       ];
       if (isSupplier && r.ref_number) rows.push(["PO / Invoice no", r.ref_number]);
       if (!opts.hidePrices) {
-        rows.push(["Amount", money(r.amount, r.currency)]);
-        if (r.idr_estimate) rows.push(["≈ IDR estimate", money(r.idr_estimate, "IDR") + (r.fx_rate ? ` (1 ${r.currency} ≈ ${Math.round(r.fx_rate).toLocaleString()} IDR)` : "")]);
+        if (r.idr_actual) {
+          rows.push(["Amount paid (IDR)", money(r.idr_actual, "IDR") + (r.fx_rate_actual ? ` (1 ${r.currency} = ${Math.round(r.fx_rate_actual).toLocaleString()} IDR, excl. fees)` : "")]);
+          rows.push(["Original amount", money(r.amount, r.currency)]);
+        } else {
+          rows.push(["Amount", money(r.amount, r.currency)]);
+          if (r.idr_estimate) rows.push(["≈ IDR estimate", money(r.idr_estimate, "IDR") + (r.fx_rate ? ` (1 ${r.currency} ≈ ${Math.round(r.fx_rate).toLocaleString()} IDR)` : "")]);
+        }
       }
       rows.push(
         ["Transfer date", fmtDate(r.transaction_date)],
@@ -2402,21 +2411,33 @@
           lineRows +
           "</tbody></table></div>";
       } else {
+        const repriced = r.idr_actual && r.items.some((it) => it.idr_unit_price != null);
         const lineRows = r.items
-          .map(
-            (it, i) =>
+          .map((it, i) => {
+            const qty = Number(it.qty) || 1;
+            if (repriced && it.idr_unit_price != null) {
+              return (
+                `<tr><td>${i + 1}</td><td>${esc(it.item_name)}</td><td class="amount">${esc(it.qty)}</td>` +
+                `<td class="amount">${money(it.idr_unit_price, "IDR")}<div class="paytiny">${money(it.unit_price, r.currency)}</div></td>` +
+                `<td class="amount">${money(qty * it.idr_unit_price, "IDR")}<div class="paytiny">${money(qty * (Number(it.unit_price) || 0), r.currency)}</div></td></tr>`
+              );
+            }
+            return (
               `<tr><td>${i + 1}</td><td>${esc(it.item_name)}</td><td class="amount">${esc(it.qty)}</td>` +
               `<td class="amount">${money(it.unit_price, r.currency)}</td>` +
-              `<td class="amount">${money((Number(it.qty) || 1) * (Number(it.unit_price) || 0), r.currency)}</td></tr>`
-          )
+              `<td class="amount">${money(qty * (Number(it.unit_price) || 0), r.currency)}</td></tr>`
+            );
+          })
           .join("");
         ls.innerHTML =
           '<div class="table-wrap"><table><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead><tbody>' +
           lineRows +
-          `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">Total</td><td class="amount" style="font-weight:700">${money(r.amount, r.currency)}</td></tr>` +
-          (r.idr_estimate
-            ? `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">≈ IDR estimate</td><td class="amount" style="font-weight:700">${money(r.idr_estimate, "IDR")}</td></tr>`
-            : "") +
+          (repriced
+            ? `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">Total paid (IDR, excl. fees)</td><td class="amount" style="font-weight:700">${money(r.idr_actual, "IDR")}<div class="paytiny">${money(r.amount, r.currency)}</div></td></tr>`
+            : `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">Total</td><td class="amount" style="font-weight:700">${money(r.amount, r.currency)}</td></tr>` +
+              (r.idr_estimate
+                ? `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">≈ IDR estimate</td><td class="amount" style="font-weight:700">${money(r.idr_estimate, "IDR")}</td></tr>`
+                : "")) +
           "</tbody></table></div>";
       }
     }
@@ -2600,6 +2621,11 @@
           <label>Note <span class="hint">(optional)</span>
             <input name="note" placeholder="e.g. transferred via BCA mobile" />
           </label>
+          ${curs.some((c) => c !== "IDR")
+            ? `<label class="full">Actual IDR paid — excluding bank fee <span class="hint">(reprices the foreign items into IDR)</span>
+                 <input name="idr_paid" type="number" step="0.01" min="0" placeholder="Total IDR debited for this payment, without fees" />
+               </label>`
+            : ""}
           <div class="full">
             <label>Transfer proof (bukti transfer)</label>
             <label class="file-drop">
@@ -2780,6 +2806,38 @@
       for (const [type, ids] of Object.entries(byType)) {
         const { error: uErr } = await sb.from(TYPES[type].table).update(stamp).in("id", ids);
         if (uErr) throw uErr;
+      }
+
+      // reprice foreign-currency requests into IDR using the actual paid value
+      try {
+        const idrPaidInput = card.querySelector("input[name=idr_paid]");
+        const idrPaid = (idrPaidInput ? Number(idrPaidInput.value) : 0) || (currency === "IDR" ? amount : 0);
+        const foreign = items.filter((it) => it.type === "payment" && (it.r.currency || "IDR") !== "IDR");
+        const foreignCurs = [...new Set(foreign.map((it) => it.r.currency))];
+        if (idrPaid > 0 && foreign.length && foreignCurs.length === 1) {
+          const fTotal = foreign.reduce((s, it) => s + Number(it.r.amount || 0), 0);
+          if (fTotal > 0) {
+            const rate = idrPaid / fTotal;
+            for (const it of foreign) {
+              const r = it.r;
+              const patch = {
+                idr_actual: Math.round(Number(r.amount) * rate * 100) / 100,
+                fx_rate_actual: Math.round(rate * 1e6) / 1e6,
+              };
+              if (Array.isArray(r.items) && r.items.length) {
+                patch.items = r.items.map((li) => ({
+                  ...li,
+                  idr_unit_price: Math.round(Number(li.unit_price) * rate),
+                }));
+              }
+              const { error: rpErr } = await sb.from("payment_requests").update(patch).eq("id", r.id);
+              if (rpErr) throw rpErr;
+            }
+            toast(`Items repriced at 1 ${foreignCurs[0]} = ${Math.round(rate).toLocaleString()} IDR`);
+          }
+        }
+      } catch (rpErr) {
+        toast("Paid, but repricing failed: " + (rpErr.message || rpErr), "error");
       }
 
       closeModal();
