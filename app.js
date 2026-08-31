@@ -2651,10 +2651,31 @@
       const enteredDate = card.querySelector("input[name=paid_date]").value;
       const checks = [];
 
-      if (p.amount != null) {
-        const diff = Math.abs(Number(p.amount) - enteredAmt);
-        const ok = enteredAmt > 0 && (diff <= 1 || diff / enteredAmt < 0.005);
-        checks.push([ok, `Amount on receipt: ${money(p.amount, p.currency || enteredCur)}` + (ok ? " — matches" : ` — you entered ${money(enteredAmt, enteredCur)}`)]);
+      // fee-aware amount check: remittance receipts show principal + fees + total
+      const rcur = p.currency || enteredCur;
+      const near = (a, b) => b > 0 && (Math.abs(a - b) <= 1 || Math.abs(a - b) / b < 0.005);
+      const principal = p.amount != null ? Number(p.amount) : null;
+      const fees = p.fees != null ? Number(p.fees) : 0;
+      const totalDebited =
+        p.total_debited != null ? Number(p.total_debited) : principal != null && fees ? principal + fees : null;
+
+      if (principal != null || totalDebited != null) {
+        let ok = false;
+        let line;
+        if (principal != null && near(principal, enteredAmt)) {
+          ok = true;
+          line = `Amount on receipt: ${money(principal, rcur)}${fees ? ` (+ ${money(fees, rcur)} fees)` : ""} — matches`;
+        } else if (totalDebited != null && near(totalDebited, enteredAmt)) {
+          ok = true;
+          line = `Total debited: ${money(totalDebited, rcur)}${principal != null ? ` (${money(principal, rcur)} + ${money(fees, rcur)} fees)` : ""} — matches your entered amount`;
+        } else {
+          line =
+            `Amount on receipt: ${money(principal != null ? principal : totalDebited, rcur)}` +
+            (fees ? ` + ${money(fees, rcur)} fees = ${money(totalDebited != null ? totalDebited : principal + fees, rcur)}` : "") +
+            ` — you entered ${money(enteredAmt, enteredCur)}`;
+        }
+        checks.push([ok, line]);
+        if (fees) checks.push([true, `Fees on receipt: ${money(fees, rcur)}`]);
       } else checks.push([null, "Amount: not readable on the receipt"]);
 
       if (p.currency) {

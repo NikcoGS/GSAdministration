@@ -32,17 +32,19 @@ Extract:
 Reply with ONLY the JSON object, no other text:
 {"supplier": ..., "ref_number": ..., "items": [...]}`;
 
-const PROOF_PROMPT = `This document is a bank transfer receipt / payment proof (bukti transfer), possibly in Indonesian, from a banking app or bank statement.
-Extract:
-- "amount": the transferred amount as a plain number (no separators)
-- "currency": ISO 4217 code of the amount ("IDR" for Rupiah / Rp)
+const PROOF_PROMPT = `This document is a bank transfer / remittance receipt or payment proof (bukti transfer), possibly in Indonesian, from a banking app, remittance service, or bank statement.
+Receipts often show SEVERAL amounts: the payment/principal amount, separate fee lines (transfer fee, remittance fee, cable/handling charge, komisi, biaya admin, correspondent charges, tax), and a total debited/charged. Extract them separately:
+- "amount": the payment / principal amount sent to the beneficiary, as a plain number (no separators). NOT including fees.
+- "fees": the SUM of all fee/charge lines as a plain number (null if none shown)
+- "total_debited": the total amount charged to the sender including fees (null if not shown)
+- "currency": ISO 4217 code of the amounts ("IDR" for Rupiah / Rp)
 - "date": the transfer date as "YYYY-MM-DD" (null if unreadable)
-- "to_account": the destination account number (string or null)
-- "to_name": the destination account holder / beneficiary name (string or null)
+- "to_account": the destination/beneficiary account number (string or null)
+- "to_name": the beneficiary name (string or null)
 - "bank": the destination bank name (string or null)
 - "reference": the transaction reference number (string or null)
 Reply with ONLY the JSON object, no other text:
-{"amount": ..., "currency": ..., "date": ..., "to_account": ..., "to_name": ..., "bank": ..., "reference": ...}`;
+{"amount": ..., "fees": ..., "total_debited": ..., "currency": ..., "date": ..., "to_account": ..., "to_name": ..., "bank": ..., "reference": ...}`;
 
 const INVOICE_PROMPT = `This document is a supplier invoice or purchase order, possibly in Indonesian.
 Extract:
