@@ -22,7 +22,9 @@
       "Bash(nohup ruby -run -e httpd . -p 8777 --bind-address=127.0.0.1)",
       "Bash(curl -s -o /dev/null -w \"%{http_code} app.js\\\\n\" http://127.0.0.1:8777/app.js)",
       "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Discount-aware invoice reading with document-total mismatch warning *)",
-      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Reprice foreign items to actual IDR paid \\(excl. fees\\) on payment *)"
+      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Reprice foreign items to actual IDR paid \\(excl. fees\\) on payment *)",
+      "Bash(/usr/bin/sed -i '' 's/?v=18/?v=19/g' index.html)",
+      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Reprice-to-IDR button for already-paid foreign currency requests *)"
     ]
   }
 }

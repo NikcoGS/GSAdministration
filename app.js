@@ -2530,6 +2530,27 @@
       actions.append(pay);
     }
 
+    // Admin: reprice a PAID foreign-currency payment into actual IDR
+    if (isAdmin && type === "payment" && r.paid_at && (r.currency || "IDR") !== "IDR" && !opts.hidePrices) {
+      const rp = el(`<button class="btn btn-ghost">💱 ${r.idr_actual ? "Fix IDR repricing" : "Reprice to IDR"}</button>`);
+      rp.addEventListener("click", async () => {
+        const val = prompt(
+          `Actual IDR paid for ${money(r.amount, r.currency)} (excluding bank fees):`,
+          r.idr_actual || ""
+        );
+        if (val == null) return;
+        const idr = Number(String(val).replace(/[^\d.]/g, ""));
+        if (!idr || idr <= 0) { toast("Enter a valid IDR amount", "error"); return; }
+        rp.disabled = true;
+        if (await repriceToIdr(r, idr)) {
+          toast(`Repriced at 1 ${r.currency} = ${Math.round(idr / Number(r.amount)).toLocaleString()} IDR`);
+          closeModal();
+          route();
+        } else rp.disabled = false;
+      });
+      actions.append(rp);
+    }
+
     // Owner: delete own pending request
     if (!isAdmin && r.status === "pending" && r.requester_id === state.user.id) {
       const del = el('<button class="btn btn-danger">Delete</button>');
@@ -2757,6 +2778,21 @@
     }
   }
 
+  // apply the realized IDR value (excl. fees) to one foreign-currency request
+  async function repriceToIdr(r, idrPaid) {
+    const rate = idrPaid / Number(r.amount);
+    const patch = {
+      idr_actual: Math.round(idrPaid * 100) / 100,
+      fx_rate_actual: Math.round(rate * 1e6) / 1e6,
+    };
+    if (Array.isArray(r.items) && r.items.length) {
+      patch.items = r.items.map((li) => ({ ...li, idr_unit_price: Math.round(Number(li.unit_price) * rate) }));
+    }
+    const { error } = await sb.from("payment_requests").update(patch).eq("id", r.id);
+    if (error) { toast("Repricing failed: " + error.message, "error"); return false; }
+    return true;
+  }
+
   async function savePayment(card, items, file) {
     const msg = card.querySelector("#pay-msg");
     const saveBtn = card.querySelector("#pay-save");
@@ -2819,19 +2855,7 @@
           if (fTotal > 0) {
             const rate = idrPaid / fTotal;
             for (const it of foreign) {
-              const r = it.r;
-              const patch = {
-                idr_actual: Math.round(Number(r.amount) * rate * 100) / 100,
-                fx_rate_actual: Math.round(rate * 1e6) / 1e6,
-              };
-              if (Array.isArray(r.items) && r.items.length) {
-                patch.items = r.items.map((li) => ({
-                  ...li,
-                  idr_unit_price: Math.round(Number(li.unit_price) * rate),
-                }));
-              }
-              const { error: rpErr } = await sb.from("payment_requests").update(patch).eq("id", r.id);
-              if (rpErr) throw rpErr;
+              await repriceToIdr(it.r, Number(it.r.amount) * rate);
             }
             toast(`Items repriced at 1 ${foreignCurs[0]} = ${Math.round(rate).toLocaleString()} IDR`);
           }
