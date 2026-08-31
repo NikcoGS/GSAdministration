@@ -2182,7 +2182,7 @@
         });
         const totalStr = Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ");
         body +=
-          `<details class="batch-sec"><summary class="section-h paid">💸 Payment — ${fmtDateTime(timeOf(k))} · by ${esc(nameMap[payer] || "—")}${batchMap[k]?.bank_ref ? " · ref " + esc(batchMap[k].bank_ref) : ""} · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b></summary>` +
+          `<details class="batch-sec"><summary class="section-h paid">💸 Payment — ${fmtDateTime(timeOf(k))} · by ${esc(nameMap[payer] || "—")}${batchMap[k]?.bank_ref ? " · ref " + esc(batchMap[k].bank_ref) : ""} · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b>${batchMap[k]?.fees ? ` + ${money(batchMap[k].fees, batchMap[k].currency || "IDR")} fees` : ""}</summary>` +
           tableFn(rows, true, nameMap) +
           `</details>`;
       }
@@ -2466,6 +2466,7 @@
         const bits = [];
         if (bt.paid_date) bits.push("paid " + fmtDate(bt.paid_date));
         if (bt.amount) bits.push(money(bt.amount, bt.currency || "IDR"));
+        if (bt.fees) bits.push("+ " + money(bt.fees, bt.currency || "IDR") + " fees");
         if (bt.bank_ref) bits.push("ref " + bt.bank_ref);
         if (bits.length) slot2.append(el(`<span class="hint">💸 ${esc(bits.join(" · "))}</span>`));
         if (bt.proof_path) {
@@ -2584,7 +2585,10 @@
           <label>Bank reference no. <span class="hint">(optional)</span>
             <input name="bank_ref" placeholder="Transfer reference" />
           </label>
-          <label class="full">Note <span class="hint">(optional)</span>
+          <label>Transaction fee <span class="hint">(optional)</span>
+            <input name="fees" type="number" step="0.01" min="0" placeholder="Remittance / admin fee" />
+          </label>
+          <label>Note <span class="hint">(optional)</span>
             <input name="note" placeholder="e.g. transferred via BCA mobile" />
           </label>
           <div class="full">
@@ -2675,7 +2679,11 @@
             ` — you entered ${money(enteredAmt, enteredCur)}`;
         }
         checks.push([ok, line]);
-        if (fees) checks.push([true, `Fees on receipt: ${money(fees, rcur)}`]);
+        if (fees) {
+          checks.push([true, `Fees on receipt: ${money(fees, rcur)}`]);
+          const feeInput = card.querySelector("input[name=fees]");
+          if (feeInput && !feeInput.value) feeInput.value = fees;
+        }
       } else checks.push([null, "Amount: not readable on the receipt"]);
 
       if (p.currency) {
@@ -2721,6 +2729,7 @@
     const amount = Number(card.querySelector("input[name=amount]").value);
     const currency = card.querySelector("select[name=currency]").value;
     const bankRef = card.querySelector("input[name=bank_ref]").value.trim();
+    const feesVal = Number(card.querySelector("input[name=fees]").value) || 0;
     const note = card.querySelector("input[name=note]").value.trim();
 
     if (!paidDate) { msg.textContent = "Enter the payment date."; msg.className = "msg error"; return; }
@@ -2747,6 +2756,7 @@
           amount,
           currency,
           bank_ref: bankRef || null,
+          fees: feesVal || null,
           note: note || null,
           proof_path: proofPath,
           verification: card._verification || null,

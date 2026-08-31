@@ -15,7 +15,8 @@
       "Bash(ruby -E utf-8:utf-8 -e ' *)",
       "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Hide invoice link in ready-to-receive purchase details *)",
       "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Payment entry modal with details, transfer proof, and AI receipt verification *)",
-      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Fee-aware payment proof verification for remittance receipts *)"
+      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Fee-aware payment proof verification for remittance receipts *)",
+      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Transaction fee field on payment entry, auto-filled from receipt *)"
     ]
   }
 }

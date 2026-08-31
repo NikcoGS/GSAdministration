@@ -729,6 +729,7 @@ alter table public.disbursement_batches add column if not exists paid_date    da
 alter table public.disbursement_batches add column if not exists amount       numeric(16,2);
 alter table public.disbursement_batches add column if not exists currency     text;
 alter table public.disbursement_batches add column if not exists bank_ref     text;            -- transfer reference number
+alter table public.disbursement_batches add column if not exists fees         numeric(16,2);   -- transaction / remittance fees
 alter table public.disbursement_batches add column if not exists note         text;
 alter table public.disbursement_batches add column if not exists proof_path   text;            -- storage: payment-proofs
 alter table public.disbursement_batches add column if not exists verification jsonb;           -- AI check result
