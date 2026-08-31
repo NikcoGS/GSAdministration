@@ -561,7 +561,7 @@
         <div class="ln4-row">
           <input type="text" class="ln-item" placeholder="Item name" />
           <input type="number" class="ln-qty" step="0.01" min="0" placeholder="1" />
-          <input type="number" class="ln-price" step="0.01" min="0" placeholder="0" />
+          <input type="number" class="ln-price" step="0.01" placeholder="0 (negative = discount)" />
           <span class="ln-line-total">—</span>
           <button type="button" class="ln-del" title="Remove line">✕</button>
         </div>`);
@@ -682,8 +682,16 @@
       if (parsed.fx_rate) fxCache[cur] = parsed.fx_rate;
       await recomputeSp();
 
-      msg.textContent = `Read ${items.length} item${items.length === 1 ? "" : "s"} from the invoice — verify prices before submitting.` + (parsed.fx_error ? " (" + parsed.fx_error + ")" : "");
-      msg.className = "msg ok";
+      // safety check: the document's own grand total vs the sum of the lines
+      const lineTotal = items.reduce((s, it) => s + (Number(it.qty) || 1) * (Number(it.unit_price) || 0), 0);
+      const docTotal = Number(parsed.total);
+      if (docTotal && Math.abs(docTotal - lineTotal) > Math.max(1, docTotal * 0.005)) {
+        msg.textContent = `⚠ The invoice's grand total is ${money(docTotal, cur)}, but the lines add up to ${money(lineTotal, cur)} — check for missed discounts or charges before submitting.`;
+        msg.className = "msg error";
+      } else {
+        msg.textContent = `Read ${items.length} item${items.length === 1 ? "" : "s"} from the invoice — verify prices before submitting.` + (parsed.fx_error ? " (" + parsed.fx_error + ")" : "");
+        msg.className = "msg ok";
+      }
       toast(`✨ ${items.length} items read`);
     } catch (err) {
       msg.textContent = err.message || "Could not read the invoice.";
@@ -715,6 +723,7 @@
     if (!items.length) { msg.textContent = "Add at least one item line."; msg.className = "msg error"; return; }
 
     const total = items.reduce((s, it) => s + it.qty * it.unit_price, 0);
+    if (total <= 0) { msg.textContent = "The total must be positive — check the discount lines."; msg.className = "msg error"; return; }
     const cur = form.currency.value;
 
     btn.disabled = true; msg.className = "msg"; msg.textContent = "Submitting…";

@@ -52,10 +52,14 @@ Extract:
 - "ref_number": the invoice number or PO number (string or null)
 - "currency": the ISO 4217 currency code of the prices (e.g. "IDR", "USD", "SGD", "EUR", "JPY", "CNY"). Rupiah amounts written like "Rp 1.500.000" are "IDR".
 - "items": EVERY line item as {"item_name": string, "qty": number, "unit": string|null, "unit_price": number}
-  * unit_price is the price per unit in that currency (plain number, no separators)
+  * unit_price is the NET price per unit actually charged, in that currency (plain number, no separators). If a line shows a discounted price, use the discounted price.
   * qty defaults to 1 if not stated
-  * exclude tax/shipping/discount/total rows from items, but if the document shows a grand total, put it in "total"
-- "total": the grand total amount in that currency (number or null)
+  * IMPORTANT — the items must add up to the payable grand total. So ALSO include as separate lines when present:
+      - document-level discounts, as a NEGATIVE unit_price line, e.g. {"item_name": "Discount 5%", "qty": 1, "unit_price": -169.35}
+      - shipping / freight / handling charges as their own line
+      - tax (VAT / PPN) as its own line if it is added on top of the item prices
+  * exclude subtotal and grand-total rows themselves from items
+- "total": the payable grand total in that currency, after discounts and charges (number or null)
 Reply with ONLY the JSON object, no other text:
 {"supplier": ..., "ref_number": ..., "currency": ..., "items": [...], "total": ...}`;
 
