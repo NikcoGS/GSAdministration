@@ -65,8 +65,13 @@ Extract:
   * use the charge's name exactly as printed on the document
   * empty array if none
 - "total": the payable grand total in that currency = items + charges, after discounts (number or null)
+- "invoice_date": the invoice/bill date as "YYYY-MM-DD" (null if unreadable)
+- "due_date": the payment due date as "YYYY-MM-DD" (null if not stated)
+- "bank_name": the bank the supplier asks to be paid into (string or null)
+- "bank_account_number": that bank account number (string or null)
+- "bank_account_name": the account holder name (string or null)
 Reply with ONLY the JSON object, no other text:
-{"supplier": ..., "ref_number": ..., "currency": ..., "items": [...], "charges": [...], "total": ...}`;
+{"supplier": ..., "ref_number": ..., "currency": ..., "items": [...], "charges": [...], "total": ..., "invoice_date": ..., "due_date": ..., "bank_name": ..., "bank_account_number": ..., "bank_account_name": ...}`;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });

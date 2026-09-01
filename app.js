@@ -359,6 +359,29 @@
     else renderExpenseForm($("#pay-form-slot"));
   }
 
+  // Send a file to the parse function and return the extracted data.
+  // mode: undefined (receiving PO) | "invoice" | "payment_proof"
+  async function readDocument(file, mode) {
+    if (file.size > 8 * 1024 * 1024) throw new Error("File is too large to read automatically (max 8 MB).");
+    const b64 = await new Promise((res, rej) => {
+      const rd = new FileReader();
+      rd.onload = () => res(String(rd.result).split(",")[1]);
+      rd.onerror = rej;
+      rd.readAsDataURL(file);
+    });
+    const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
+    const { data, error } = await sb.functions.invoke("swift-action", {
+      body: { data: b64, media_type: mediaType, ...(mode ? { mode } : {}) },
+    });
+    if (error) {
+      let detail = "";
+      try { detail = (await error.context?.json())?.error || ""; } catch { /* ignore */ }
+      throw new Error(detail || "Document reading is unavailable — is the parse function deployed and up to date?");
+    }
+    if (data?.error) throw new Error(data.error);
+    return data;
+  }
+
   function renderExpenseForm(root) {
     root.innerHTML = `
       <form id="pr-form" class="card panel" style="max-width:820px">
@@ -403,6 +426,7 @@
               <input type="file" name="invoice" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif" />
               <span id="file-label">📎 Click to attach a PDF or image (max 10&nbsp;MB)</span>
             </label>
+            <button type="button" class="btn btn-ghost btn-sm hidden" id="pr-parse" style="margin-top:8px">✨ Read details from invoice</button>
           </div>
         </div>
         <div class="modal-actions">
@@ -418,9 +442,73 @@
       $("#file-label").innerHTML = f
         ? '<span class="file-name">📎 ' + esc(f.name) + "</span> — click to change"
         : "📎 Click to attach a PDF or image (max 10&nbsp;MB)";
+      $("#pr-parse").classList.toggle("hidden", !f);
     });
 
+    $("#pr-parse").addEventListener("click", () => parseExpenseInvoice(fileInput.files[0]));
     $("#pr-form").addEventListener("submit", submitRequest);
+  }
+
+  // Fill the expense form from an attached invoice / bill.
+  async function parseExpenseInvoice(file) {
+    if (!file) return;
+    const form = $("#pr-form");
+    const msg = $("#pr-msg");
+    const btn = $("#pr-parse");
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "✨ Reading invoice…";
+    msg.className = "msg";
+    msg.textContent = "";
+
+    try {
+      const p = await readDocument(file, "invoice");
+      const setIfEmpty = (field, value) => {
+        if (value == null || value === "") return false;
+        const input = form[field];
+        if (!input || input.value.trim()) return false;
+        input.value = value;
+        return true;
+      };
+
+      const filled = [];
+      if (setIfEmpty("payee_name", p.supplier)) filled.push("payee");
+
+      const cur = String(p.currency || "IDR").toUpperCase();
+      if (![...form.currency.options].some((o) => o.value === cur)) form.currency.append(el(`<option>${esc(cur)}</option>`));
+      form.currency.value = cur;
+
+      const total = Number(p.total) || 0;
+      if (total > 0 && !form.amount.value) { form.amount.value = total; filled.push("amount"); }
+      if (setIfEmpty("transaction_date", p.due_date || p.invoice_date)) filled.push("date");
+      if (setIfEmpty("bank_name", p.bank_name)) filled.push("bank");
+      if (setIfEmpty("bank_account_number", p.bank_account_number)) filled.push("account no.");
+      if (setIfEmpty("bank_account_name", p.bank_account_name)) filled.push("account name");
+      if (!form.title.value.trim() && p.supplier) {
+        form.title.value = p.ref_number ? `${p.supplier} — ${p.ref_number}` : String(p.supplier);
+        filled.push("title");
+      }
+      // summarise what the invoice is for, since expenses have no item lines
+      if (!form.description.value.trim()) {
+        const bits = [];
+        if (p.ref_number) bits.push("Invoice " + p.ref_number);
+        (p.items || []).forEach((it) => bits.push(`${it.item_name}${it.qty > 1 ? " ×" + it.qty : ""}`));
+        (p.charges || []).forEach((c) => bits.push(`${c.name}: ${money(c.amount, cur)}`));
+        if (bits.length) form.description.value = bits.join("\n");
+      }
+
+      msg.textContent = filled.length
+        ? `Read from the invoice (${filled.join(", ")}) — please verify before submitting.`
+        : "Nothing new to fill — the fields already have values.";
+      msg.className = "msg ok";
+      toast("✨ Invoice read");
+    } catch (err) {
+      msg.textContent = err.message || "Could not read the invoice.";
+      msg.className = "msg error";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
   }
 
   async function submitRequest(e) {
@@ -659,28 +747,17 @@
     msg.className = "msg"; msg.textContent = "";
 
     try {
-      const b64 = await new Promise((res, rej) => {
-        const rd = new FileReader();
-        rd.onload = () => res(String(rd.result).split(",")[1]);
-        rd.onerror = rej;
-        rd.readAsDataURL(file);
-      });
-      const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
-
-      const { data: parsed, error } = await sb.functions.invoke("swift-action", {
-        body: { data: b64, media_type: mediaType, mode: "invoice" },
-      });
-      if (error) {
-        let detail = "";
-        try { detail = (await error.context?.json())?.error || ""; } catch { /* ignore */ }
-        throw new Error(detail || "Invoice reading is unavailable — is the parse function deployed with the latest code?");
-      }
-      if (parsed?.error) throw new Error(parsed.error);
+      const parsed = await readDocument(file, "invoice");
 
       const form = $("#sp-form");
       if (parsed.supplier && !form.payee_name.value.trim()) form.payee_name.value = parsed.supplier;
       if (parsed.ref_number && !form.ref_number.value.trim()) form.ref_number.value = parsed.ref_number;
       if (parsed.supplier && !form.title.value.trim()) form.title.value = `Supplier payment — ${parsed.supplier}`;
+      // payment instructions printed on the invoice
+      if (parsed.bank_name && !form.bank_name.value.trim()) form.bank_name.value = parsed.bank_name;
+      if (parsed.bank_account_number && !form.bank_account_number.value.trim()) form.bank_account_number.value = parsed.bank_account_number;
+      if (parsed.bank_account_name && !form.bank_account_name.value.trim()) form.bank_account_name.value = parsed.bank_account_name;
+      if (!form.transaction_date.value && (parsed.due_date || parsed.invoice_date)) form.transaction_date.value = parsed.due_date || parsed.invoice_date;
 
       const cur = String(parsed.currency || "IDR").toUpperCase();
       if (![...form.currency.options].some((o) => o.value === cur)) {
@@ -1453,25 +1530,7 @@
     msg.textContent = "";
 
     try {
-      // file -> base64 (without the data: prefix)
-      const b64 = await new Promise((res, rej) => {
-        const rd = new FileReader();
-        rd.onload = () => res(String(rd.result).split(",")[1]);
-        rd.onerror = rej;
-        rd.readAsDataURL(file);
-      });
-      const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
-
-      // NOTE: the dashboard deployed the parse-po function under the slug "swift-action"
-      const { data: parsed, error } = await sb.functions.invoke("swift-action", {
-        body: { data: b64, media_type: mediaType },
-      });
-      if (error) {
-        let detail = "";
-        try { detail = (await error.context?.json())?.error || ""; } catch { /* ignore */ }
-        throw new Error(detail || "PO reading is not set up yet (deploy the parse-po function in Supabase).");
-      }
-      if (parsed?.error) throw new Error(parsed.error);
+      const parsed = await readDocument(file);
 
       const form = $("#recv-form");
       if (parsed.supplier && !form.supplier.value.trim()) form.supplier.value = parsed.supplier;
@@ -2802,22 +2861,7 @@
     box.innerHTML = "✨ Reading the receipt…";
 
     try {
-      const b64 = await new Promise((res, rej) => {
-        const rd = new FileReader();
-        rd.onload = () => res(String(rd.result).split(",")[1]);
-        rd.onerror = rej;
-        rd.readAsDataURL(file);
-      });
-      const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
-      const { data: p, error } = await sb.functions.invoke("swift-action", {
-        body: { data: b64, media_type: mediaType, mode: "payment_proof" },
-      });
-      if (error) {
-        let detail = "";
-        try { detail = (await error.context?.json())?.error || ""; } catch { /* ignore */ }
-        throw new Error(detail || "Verification unavailable — is the parse function updated to v3?");
-      }
-      if (p?.error) throw new Error(p.error);
+      const p = await readDocument(file, "payment_proof");
 
       // compare with the entered fields
       const enteredAmt = Number(card.querySelector("input[name=amount]").value) || 0;
