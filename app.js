@@ -3085,6 +3085,7 @@
       (groups[it.r.requester_id] = groups[it.r.requester_id] || []).push(it);
     });
 
+    const destList = []; // flat list of destination sub-groups, indexed by the Pay buttons
     const grandCount = items.length;
     let html = `<p class="sub" style="margin:-6px 0 18px">${grandCount} approved item${
       grandCount === 1 ? "" : "s"
@@ -3112,30 +3113,79 @@
       });
       const totalStr = Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ");
 
-      const rowsHtml = groupItems
-        .map((it) => {
-          const { type, r } = it;
-          const amt = TYPES[type].amount(r);
-          // where the money goes
-          let payTo;
-          if (type === "payment") {
-            payTo = r.bank_account_number
-              ? `<span class="rek">${esc(r.bank_name || "")} ${esc(r.bank_account_number)}</span>${
-                  r.bank_account_name ? " · " + esc(r.bank_account_name) : ""
-                }`
-              : `payee: ${esc(r.payee_name || "—")}`;
+      // sub-group by destination account: supplier/payee for payment requests,
+      // the employee's own rekening for reimbursements. One transfer per group.
+      const dests = {};
+      groupItems.forEach((it) => {
+        const { type, r } = it;
+        let key, label, bank, acct, holder;
+        if (type === "payment") {
+          if (r.bank_account_number) {
+            key = "a:" + String(r.bank_account_number).replace(/\D+/g, "");
+            bank = r.bank_name; acct = r.bank_account_number; holder = r.bank_account_name;
           } else {
-            payTo = hasRek ? `<span class="rek">${esc(p.bank_name || "")} ${esc(p.bank_account_number)}</span>` : "— (no rekening)";
+            key = "p:" + String(r.payee_name || "").trim().toLowerCase();
           }
+          label = "🏭 " + (r.payee_name || "Supplier");
+        } else {
+          key = "self";
+          label = "🧾 Reimbursement to " + name;
+          bank = p.bank_name; acct = p.bank_account_number; holder = p.bank_account_name;
+        }
+        if (!dests[key]) dests[key] = { label, bank, acct, holder, items: [] };
+        dests[key].items.push(it);
+      });
+
+      const destHtml = Object.keys(dests)
+        .map((dk) => {
+          const d = dests[dk];
+          destList.push({ uid, items: d.items });
+          const di = destList.length - 1;
+
+          const dTotals = {};
+          d.items.forEach((it) => {
+            const c = TYPES[it.type].currency(it.r) || "IDR";
+            dTotals[c] = (dTotals[c] || 0) + Number(TYPES[it.type].amount(it.r) || 0);
+          });
+          const dTotalStr = Object.entries(dTotals).map(([c, v]) => money(v, c)).join(" + ");
+          const acctLine = d.acct
+            ? `${esc(d.bank || "Bank")} · <span class="rek">${esc(d.acct)}</span>${d.holder ? " · " + esc(d.holder) : ""}`
+            : '<span class="missing">⚠️ no account on file</span>';
+
+          const rowsHtml = d.items
+            .map((it) => {
+              const { type, r } = it;
+              const amt = TYPES[type].amount(r);
+              return `
+                <tr data-type="${type}" data-id="${r.id}">
+                  <td><span class="type-tag ${type}">${TYPES[type].label}</span></td>
+                  <td>${esc(TYPES[type].title(r))}</td>
+                  <td>${fmtDate(r.reviewed_at)}</td>
+                  <td class="amount">${amt != null ? money(amt, TYPES[type].currency(r)) : "—"}</td>
+                  <td><button class="btn btn-ghost btn-sm mark-paid" data-type="${type}" data-id="${r.id}">Pay this only</button></td>
+                </tr>`;
+            })
+            .join("");
+
           return `
-            <tr data-type="${type}" data-id="${r.id}">
-              <td><span class="type-tag ${type}">${TYPES[type].label}</span></td>
-              <td>${esc(TYPES[type].title(r))}</td>
-              <td>${fmtDate(r.reviewed_at)}</td>
-              <td class="amount">${amt != null ? money(amt, TYPES[type].currency(r)) : "—"}</td>
-              <td class="paytiny">${payTo}</td>
-              <td><button class="btn btn-primary btn-sm mark-paid" data-type="${type}" data-id="${r.id}">💸 Input payment</button></td>
-            </tr>`;
+            <div class="dest-sec">
+              <div class="dest-head">
+                <div>
+                  <div class="dest-name">${esc(d.label)}</div>
+                  <div class="dest-bank">${acctLine}</div>
+                </div>
+                <div class="dest-actions">
+                  <span class="dest-total">${dTotalStr}</span>
+                  <button class="btn btn-success btn-sm pay-dest" data-di="${di}">💸 Pay (${d.items.length})</button>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Type</th><th>Description</th><th>Approved</th><th>Amount</th><th></th></tr></thead>
+                  <tbody>${rowsHtml}</tbody>
+                </table>
+              </div>
+            </div>`;
         })
         .join("");
 
@@ -3150,16 +3200,17 @@
               <div class="dg-total"><div class="lbl">To pay</div><div class="val">${totalStr}</div></div>
               <div style="display:flex;gap:8px">
                 <button class="btn btn-ghost btn-sm print-group" data-uid="${uid}">🖨️ Print</button>
-                <button class="btn btn-success btn-sm mark-all-paid" data-uid="${uid}">💸 Pay all (${groupItems.length})</button>
+                ${
+                  // one payment record = one transfer, so only offer "pay all"
+                  // when everything for this person goes to the same account
+                  Object.keys(dests).length === 1
+                    ? `<button class="btn btn-success btn-sm mark-all-paid" data-uid="${uid}">💸 Pay all (${groupItems.length})</button>`
+                    : `<span class="hint">${Object.keys(dests).length} accounts — pay per group below</span>`
+                }
               </div>
             </div>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Type</th><th>Description</th><th>Approved</th><th>Amount</th><th>Pay to</th><th></th></tr></thead>
-              <tbody>${rowsHtml}</tbody>
-            </table>
-          </div>
+          ${destHtml}
         </div>`;
     }
 
@@ -3194,6 +3245,14 @@
         e.stopPropagation();
         const groupItems = groups[b.dataset.uid] || [];
         if (groupItems.length) openPaymentModal(groupItems);
+      })
+    );
+    // pay one destination (supplier / rekening) in a single payment entry
+    $$(".pay-dest", root).forEach((b) =>
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const d = destList[Number(b.dataset.di)];
+        if (d && d.items.length) openPaymentModal(d.items);
       })
     );
   }
