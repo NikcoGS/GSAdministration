@@ -2215,9 +2215,9 @@
 
     // ---- per-item detail (one row per invoice line, incl. charges) ----
     const itemLines = [[
-      "Invoice No", "Invoice Date", "Supplier", "Line Type", "Item / Charge",
+      "Invoice No", "Invoice Date", "Supplier", "Line Type", "Item Code", "Item / Charge",
       "Qty", "Unit", "Unit Price", "Line Total", "Currency",
-      "Unit Price (Rp)", "Line Total (Rp)", "Payment Status", "Payment Date",
+      "Unit Price (Rp)", "Line Total (Rp)", "Landed Unit Price", "Payment Status", "Payment Date",
     ]];
 
     rows.forEach((r) => {
@@ -2235,10 +2235,11 @@
         // prefer the actual IDR unit price written at payment time
         const idrUnit = it.idr_unit_price != null ? Number(it.idr_unit_price) : rate ? price * rate : null;
         itemLines.push([
-          ...base, "Item", it.item_name || "",
+          ...base, "Item", it.item_code && it.item_code !== "N/A" ? it.item_code : "", it.item_name || "",
           qty, it.unit || "", num(price), num(qty * price), cur,
           idrUnit == null ? "" : num(idrUnit),
           idrUnit == null ? "" : num(qty * idrUnit),
+          it.landed_unit_price != null ? num(it.landed_unit_price) : "",
           status, payDate,
         ]);
       });
@@ -2247,10 +2248,11 @@
         const amt = Number(c.amount) || 0;
         const idrAmt = c.idr_amount != null ? Number(c.idr_amount) : rate ? amt * rate : null;
         itemLines.push([
-          ...base, "Charge", c.name || "",
+          ...base, "Charge", "", c.name || "",
           1, "", num(amt), num(amt), cur,
           idrAmt == null ? "" : num(idrAmt),
           idrAmt == null ? "" : num(idrAmt),
+          "",
           status, payDate,
         ]);
       });
@@ -2742,7 +2744,7 @@
     openModal(card);
 
     // supplier payment: show the item lines from the request
-    if (type === "payment" && r.request_type === "supplier" && Array.isArray(r.items) && r.items.length) {
+    if (type === "payment" && Array.isArray(r.items) && r.items.length) {
       const ls = card.querySelector("#lines-slot");
       if (opts.hidePrices) {
         // receiving context: items and quantities only, no money
@@ -2755,42 +2757,58 @@
           "</tbody></table></div>";
       } else {
         const repriced = r.idr_actual && r.items.some((it) => it.idr_unit_price != null);
+        const hasCode = r.items.some((it) => it.item_code && it.item_code !== "N/A");
+        const hasLanded = r.items.some((it) => it.landed_unit_price != null);
         const lineRows = r.items
           .map((it, i) => {
             const qty = Number(it.qty) || 1;
+            const codeCell = hasCode ? `<td class="paytiny">${esc(it.item_code && it.item_code !== "N/A" ? it.item_code : "—")}</td>` : "";
+            // landed cost = unit price incl. its share of tax / shipping
+            const landedCell = hasLanded
+              ? `<td class="amount">${it.landed_unit_price != null ? money(it.landed_unit_price, r.currency) : "—"}</td>`
+              : "";
             if (repriced && it.idr_unit_price != null) {
               return (
-                `<tr><td>${i + 1}</td><td>${esc(it.item_name)}</td><td class="amount">${esc(it.qty)}</td>` +
+                `<tr><td>${i + 1}</td>${codeCell}<td>${esc(it.item_name)}</td><td class="amount">${esc(it.qty)}</td>` +
                 `<td class="amount">${money(it.idr_unit_price, "IDR")}<div class="paytiny">${money(it.unit_price, r.currency)}</div></td>` +
+                landedCell +
                 `<td class="amount">${money(qty * it.idr_unit_price, "IDR")}<div class="paytiny">${money(qty * (Number(it.unit_price) || 0), r.currency)}</div></td></tr>`
               );
             }
             return (
-              `<tr><td>${i + 1}</td><td>${esc(it.item_name)}</td><td class="amount">${esc(it.qty)}</td>` +
+              `<tr><td>${i + 1}</td>${codeCell}<td>${esc(it.item_name)}</td><td class="amount">${esc(it.qty)}</td>` +
               `<td class="amount">${money(it.unit_price, r.currency)}</td>` +
+              landedCell +
               `<td class="amount">${money(qty * (Number(it.unit_price) || 0), r.currency)}</td></tr>`
             );
           })
           .join("");
+        // label column spans everything between the "#" and the final total column
+        const labelSpan = 3 + (hasCode ? 1 : 0) + (hasLanded ? 1 : 0);
         const chargeRows = (Array.isArray(r.charges) ? r.charges : [])
           .map((c) =>
-            `<tr><td></td><td colspan="3" style="text-align:right;color:var(--muted)">${esc(c.name)}</td>` +
+            `<tr><td></td><td colspan="${labelSpan}" style="text-align:right;color:var(--muted)">${esc(c.name)}</td>` +
             (repriced && c.idr_amount != null
               ? `<td class="amount">${money(c.idr_amount, "IDR")}<div class="paytiny">${money(c.amount, r.currency)}</div></td>`
               : `<td class="amount">${money(c.amount, r.currency)}</td>`) +
             `</tr>`
           )
           .join("");
+        const foot = (label, value, sub) =>
+          `<tr><td></td><td colspan="${labelSpan}" style="text-align:right;font-weight:700">${label}</td>` +
+          `<td class="amount" style="font-weight:700">${value}${sub ? `<div class="paytiny">${sub}</div>` : ""}</td></tr>`;
         ls.innerHTML =
-          '<div class="table-wrap"><table><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead><tbody>' +
+          '<div class="table-wrap"><table><thead><tr><th>#</th>' +
+          (hasCode ? "<th>Code</th>" : "") +
+          "<th>Item</th><th>Qty</th><th>Unit price</th>" +
+          (hasLanded ? '<th>Landed unit<div class="paytiny">incl. tax/shipping</div></th>' : "") +
+          "<th>Total</th></tr></thead><tbody>" +
           lineRows +
           chargeRows +
           (repriced
-            ? `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">Total paid (IDR, excl. fees)</td><td class="amount" style="font-weight:700">${money(r.idr_actual, "IDR")}<div class="paytiny">${money(r.amount, r.currency)}</div></td></tr>`
-            : `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">Total</td><td class="amount" style="font-weight:700">${money(r.amount, r.currency)}</td></tr>` +
-              (r.idr_estimate
-                ? `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">≈ IDR estimate</td><td class="amount" style="font-weight:700">${money(r.idr_estimate, "IDR")}</td></tr>`
-                : "")) +
+            ? foot("Total paid (IDR, excl. fees)", money(r.idr_actual, "IDR"), money(r.amount, r.currency))
+            : foot("Total", money(r.amount, r.currency)) +
+              (r.idr_estimate ? foot("≈ IDR estimate", money(r.idr_estimate, "IDR")) : "")) +
           "</tbody></table></div>";
       }
     }
