@@ -32,7 +32,8 @@
       "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Read invoice details into expense payments; extract bank details; share document reader *)",
       "Bash(/usr/bin/sed -i '' 's/?v=22/?v=23/g' index.html)",
       "Bash(cat)",
-      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Disburse: sub-group by destination account and pay per supplier *)"
+      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Disburse: sub-group by destination account and pay per supplier *)",
+      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Export invoices and per-item lines in GS Purchasing compilation format *)"
     ]
   }
 }

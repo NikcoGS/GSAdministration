@@ -605,6 +605,15 @@
           <label>Transaction / transfer date
             <input name="transaction_date" type="date" />
           </label>
+          <label>Invoice date <span class="hint">(optional)</span>
+            <input name="invoice_date" type="date" />
+          </label>
+          <label>Buyer entity <span class="hint">(optional)</span>
+            <input name="buyer" placeholder="e.g. PT Solusi Golf Indonesia" />
+          </label>
+          <label>Payment terms <span class="hint">(optional)</span>
+            <input name="payment_terms" placeholder="e.g. C.O.D, Bank Transfer" />
+          </label>
           <label>Bank name
             <input name="bank_name" placeholder="Supplier's bank" />
           </label>
@@ -758,6 +767,12 @@
       if (parsed.bank_account_number && !form.bank_account_number.value.trim()) form.bank_account_number.value = parsed.bank_account_number;
       if (parsed.bank_account_name && !form.bank_account_name.value.trim()) form.bank_account_name.value = parsed.bank_account_name;
       if (!form.transaction_date.value && (parsed.due_date || parsed.invoice_date)) form.transaction_date.value = parsed.due_date || parsed.invoice_date;
+      if (parsed.invoice_date && !form.invoice_date.value) form.invoice_date.value = parsed.invoice_date;
+      if (parsed.buyer && !form.buyer.value.trim()) form.buyer.value = parsed.buyer;
+      if (parsed.payment_terms && !form.payment_terms.value.trim()) form.payment_terms.value = parsed.payment_terms;
+      // keep the printed gross/discount for the purchasing compilation
+      form._gross = Number(parsed.gross_subtotal) || null;
+      form._discount = Number(parsed.discount_total) || null;
 
       const cur = String(parsed.currency || "IDR").toUpperCase();
       if (![...form.currency.options].some((o) => o.value === cur)) {
@@ -871,6 +886,11 @@
         idr_estimate: cur === "IDR" ? null : form._idrEstimate || null,
         items,
         charges: chargesList.length ? chargesList : null,
+        invoice_date: form.invoice_date.value || null,
+        buyer: form.buyer.value.trim() || null,
+        payment_terms: form.payment_terms.value.trim() || null,
+        gross_subtotal: form._gross || null,
+        discount_total: form._discount || null,
         transaction_date: form.transaction_date.value || null,
         bank_name: form.bank_name.value.trim() || null,
         bank_account_name: form.bank_account_name.value.trim() || null,
@@ -2101,6 +2121,161 @@
   }
 
   // ==========================================================================
+  //  EXPORT: GS Purchasing compilation (CSV, same columns as the spreadsheet)
+  // ==========================================================================
+  const PURCHASING_COLUMNS = [
+    "Invoice No", "Invoice Date", "Supplier", "Buyer", "Payment Terms",
+    "Gross Subtotal (Rp)", "Discount (Rp)", "Tax / PPN (Rp)", "Other Fee (Rp)", "Invoice Total (Rp)",
+    "Bank Name", "Account Name", "Account Number",
+    "Payment Status", "Amount Paid (Rp)", "Payment Date", "Payment Ref / Notes",
+  ];
+
+  async function exportPurchasingCsv() {
+    toast("Preparing export…");
+    const { data: rows, error } = await sb
+      .from("payment_requests")
+      .select("*")
+      .order("invoice_date", { ascending: true, nullsFirst: false });
+    if (error) { toast(error.message, "error"); return; }
+    if (!rows || !rows.length) { toast("Nothing to export", "error"); return; }
+
+    // payment batches carry the transfer date / reference / fees
+    const batchIds = [...new Set(rows.map((r) => r.batch_id).filter(Boolean))];
+    const batchMap = {};
+    if (batchIds.length) {
+      const { data: bts } = await sb.from("disbursement_batches").select("*").in("id", batchIds);
+      (bts || []).forEach((b) => (batchMap[b.id] = b));
+    }
+
+    const num = (v) => (v == null || v === "" ? "" : Math.round(Number(v) * 100) / 100);
+    const lines = [PURCHASING_COLUMNS];
+
+    rows.forEach((r) => {
+      const bt = r.batch_id ? batchMap[r.batch_id] : null;
+      const cur = (r.currency || "IDR").toUpperCase();
+      // the compilation is in Rupiah — convert foreign invoices with the realised
+      // rate when we have it, otherwise the estimate; leave blank if neither.
+      const rate = cur === "IDR" ? 1 : r.fx_rate_actual || r.fx_rate || null;
+      const toIdr = (v) => (v == null || v === "" ? "" : rate ? num(Number(v) * rate) : "");
+
+      const charges = Array.isArray(r.charges) ? r.charges : [];
+      const isTax = (n) => /ppn|tax|vat|pajak/i.test(n || "");
+      const taxTotal = charges.filter((c) => isTax(c.name)).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+      const feeTotal = charges.filter((c) => !isTax(c.name)).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+
+      const itemsSubtotal = (Array.isArray(r.items) ? r.items : []).reduce(
+        (s, it) => s + (Number(it.qty) || 1) * (Number(it.unit_price) || 0), 0
+      );
+      const gross = r.gross_subtotal != null ? r.gross_subtotal : itemsSubtotal || null;
+      const discount = r.discount_total != null ? r.discount_total : (r.gross_subtotal != null ? null : 0);
+
+      const status = r.paid_at
+        ? "Paid"
+        : r.status === "approved" ? "Approved – not yet paid"
+        : r.status === "rejected" ? "Rejected" : "Pending approval";
+
+      const amountPaid = r.paid_at
+        ? (r.idr_actual != null ? num(r.idr_actual) : toIdr(r.amount))
+        : "";
+
+      const notes = [];
+      if (bt?.bank_ref) notes.push("Ref No. " + bt.bank_ref);
+      if (bt?.note) notes.push(bt.note);
+      if (bt?.fees) notes.push(`Bank fee ${money(bt.fees, bt.currency || "IDR")} (excluded from amount paid)`);
+      if (cur !== "IDR") {
+        notes.push(
+          `Invoice in ${cur} ${money(r.amount, cur)}` +
+          (r.fx_rate_actual ? ` — paid at 1 ${cur} = ${Math.round(r.fx_rate_actual).toLocaleString()} IDR`
+            : rate ? ` — converted at an estimated 1 ${cur} = ${Math.round(rate).toLocaleString()} IDR` : "")
+        );
+      }
+      if (r.request_type !== "supplier") notes.push("Expense payment (non-supplier)");
+      if (r.description) notes.push(r.description.replace(/\s+/g, " ").slice(0, 300));
+
+      lines.push([
+        r.ref_number || "",
+        r.invoice_date || "",
+        r.payee_name || "",
+        r.buyer || "",
+        r.payment_terms || "",
+        toIdr(gross),
+        toIdr(discount),
+        toIdr(taxTotal || null),
+        toIdr(feeTotal || null),
+        toIdr(r.amount),
+        r.bank_name || "",
+        r.bank_account_name || "",
+        r.bank_account_number || "",
+        status,
+        amountPaid,
+        bt?.paid_date || (r.paid_at ? String(r.paid_at).slice(0, 10) : ""),
+        notes.join(" | "),
+      ]);
+    });
+
+    // ---- per-item detail (one row per invoice line, incl. charges) ----
+    const itemLines = [[
+      "Invoice No", "Invoice Date", "Supplier", "Line Type", "Item / Charge",
+      "Qty", "Unit", "Unit Price", "Line Total", "Currency",
+      "Unit Price (Rp)", "Line Total (Rp)", "Payment Status", "Payment Date",
+    ]];
+
+    rows.forEach((r) => {
+      const bt = r.batch_id ? batchMap[r.batch_id] : null;
+      const cur = (r.currency || "IDR").toUpperCase();
+      const rate = cur === "IDR" ? 1 : r.fx_rate_actual || r.fx_rate || null;
+      const status = r.paid_at ? "Paid" : r.status === "approved" ? "Approved – not yet paid"
+        : r.status === "rejected" ? "Rejected" : "Pending approval";
+      const payDate = bt?.paid_date || (r.paid_at ? String(r.paid_at).slice(0, 10) : "");
+      const base = [r.ref_number || "", r.invoice_date || "", r.payee_name || ""];
+
+      (Array.isArray(r.items) ? r.items : []).forEach((it) => {
+        const qty = Number(it.qty) || 1;
+        const price = Number(it.unit_price) || 0;
+        // prefer the actual IDR unit price written at payment time
+        const idrUnit = it.idr_unit_price != null ? Number(it.idr_unit_price) : rate ? price * rate : null;
+        itemLines.push([
+          ...base, "Item", it.item_name || "",
+          qty, it.unit || "", num(price), num(qty * price), cur,
+          idrUnit == null ? "" : num(idrUnit),
+          idrUnit == null ? "" : num(qty * idrUnit),
+          status, payDate,
+        ]);
+      });
+
+      (Array.isArray(r.charges) ? r.charges : []).forEach((c) => {
+        const amt = Number(c.amount) || 0;
+        const idrAmt = c.idr_amount != null ? Number(c.idr_amount) : rate ? amt * rate : null;
+        itemLines.push([
+          ...base, "Charge", c.name || "",
+          1, "", num(amt), num(amt), cur,
+          idrAmt == null ? "" : num(idrAmt),
+          idrAmt == null ? "" : num(idrAmt),
+          status, payDate,
+        ]);
+      });
+    });
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCsv(`GS_Purchasing_invoices_${stamp}.csv`, lines);
+    setTimeout(() => downloadCsv(`GS_Purchasing_items_${stamp}.csv`, itemLines), 600);
+    toast(`Exported ${rows.length} invoice(s) and ${itemLines.length - 1} item line(s) ✔`);
+  }
+
+  function downloadCsv(filename, lines) {
+    const csv = lines
+      .map((row) => row.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(","))
+      .join("\r\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+
+  // ==========================================================================
   //  VIEW: SITE OPS TRACKING (admin) — all receiving + movements, with reports
   // ==========================================================================
   async function renderTracking() {
@@ -2253,14 +2428,18 @@
       </div>`;
 
     const filters = ["pending", "approved", "rejected", "all"];
-    const pills = filters
-      .map(
-        (f) =>
-          `<button class="filter-pill ${f === state.adminFilter ? "active" : ""}" data-filter="${f}">${
-            f[0].toUpperCase() + f.slice(1)
-          }</button>`
-      )
-      .join("");
+    const pills =
+      filters
+        .map(
+          (f) =>
+            `<button class="filter-pill ${f === state.adminFilter ? "active" : ""}" data-filter="${f}">${
+              f[0].toUpperCase() + f.slice(1)
+            }</button>`
+        )
+        .join("") +
+      (mod === "payment"
+        ? '<span class="spacer"></span><button class="btn btn-ghost btn-sm" id="export-purchasing">⬇️ Export for GS Purchasing</button>'
+        : "");
 
     const tableFn = mod === "trip" ? tripsTable : mod === "petty" ? pettyTable : requestsTable;
 
@@ -2365,6 +2544,7 @@
     };
     $("#bulk-approve")?.addEventListener("click", () => bulkReview("approved"));
     $("#bulk-reject")?.addEventListener("click", () => bulkReview("rejected"));
+    $("#export-purchasing")?.addEventListener("click", exportPurchasingCsv);
   }
 
   // ==========================================================================

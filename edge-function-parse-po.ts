@@ -67,11 +67,15 @@ Extract:
 - "total": the payable grand total in that currency = items + charges, after discounts (number or null)
 - "invoice_date": the invoice/bill date as "YYYY-MM-DD" (null if unreadable)
 - "due_date": the payment due date as "YYYY-MM-DD" (null if not stated)
+- "buyer": the customer/buyer the invoice is addressed to (string or null)
+- "payment_terms": the payment terms as printed, e.g. "C.O.D", "Bank Transfer", "30 days" (string or null)
+- "gross_subtotal": the items subtotal BEFORE any discount, as printed (number or null)
+- "discount_total": the total discount amount, as printed — a positive number (0 if none)
 - "bank_name": the bank the supplier asks to be paid into (string or null)
 - "bank_account_number": that bank account number (string or null)
 - "bank_account_name": the account holder name (string or null)
 Reply with ONLY the JSON object, no other text:
-{"supplier": ..., "ref_number": ..., "currency": ..., "items": [...], "charges": [...], "total": ..., "invoice_date": ..., "due_date": ..., "bank_name": ..., "bank_account_number": ..., "bank_account_name": ...}`;
+{"supplier": ..., "ref_number": ..., "currency": ..., "items": [...], "charges": [...], "total": ..., "invoice_date": ..., "due_date": ..., "buyer": ..., "payment_terms": ..., "gross_subtotal": ..., "discount_total": ..., "bank_name": ..., "bank_account_number": ..., "bank_account_name": ...}`;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
