@@ -16,9 +16,10 @@ window.GS_CONFIG = {
   APP_NAME: "GS Operational System",
 
   // --------------------------------------------------------------------------
-  // Google sync (optional) — needs the "gs-sync" edge function deployed and the
-  // GOOGLE_SERVICE_ACCOUNT secret set in Supabase. Share BOTH the spreadsheet
-  // and the Drive folder with the service account's client_email (Editor).
+  // Google sync (optional) — needs the "gs-sync" edge function deployed, plus
+  // the Apps Script web app (apps-script-gs-sync.gs) and its two Supabase
+  // secrets: GS_APPS_SCRIPT_URL and GS_APPS_SCRIPT_TOKEN. The script runs as
+  // you, so the Sheet and Drive folder need no extra sharing.
   // Leave GOOGLE_SYNC_ENABLED false to keep everything manual.
   // --------------------------------------------------------------------------
   GOOGLE_SYNC_ENABLED: false,
