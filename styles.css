@@ -228,6 +228,10 @@ details.batch-sec .card { margin: 8px 0 14px; }
 .ln4-row { margin-bottom: 8px; }
 .ln4-row .ln-line-total { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 13px; text-align: right; color: var(--muted); overflow: hidden; }
 .fx-hint { font-size: 13px; color: var(--muted); font-weight: 600; }
+.ch-head, .ch-row { display: grid; grid-template-columns: 1fr 150px 36px; gap: 10px; align-items: center; }
+.ch-head { padding: 4px 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; margin-top: 14px; }
+.ch-row { margin-bottom: 8px; }
+@media (max-width: 720px) { .ch-head { display: none; } .ch-row { grid-template-columns: 1fr 100px 30px; } }
 @media (max-width: 720px) { .ln4-head { display: none; } .ln4-row { grid-template-columns: 1fr 56px 90px 80px 30px; } }
 
 /* payment proof verification results */

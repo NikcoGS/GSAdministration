@@ -541,6 +541,9 @@
         <div class="ln4-head"><span>Item</span><span>Qty</span><span>Unit price</span><span>Line total</span><span></span></div>
         <div id="sp-lines"></div>
         <button type="button" class="btn btn-ghost btn-sm" id="sp-add-line">➕ Add item</button>
+        <div class="ch-head"><span>Biaya (PPN, biaya kirim, dll.)</span><span>Amount</span><span></span></div>
+        <div id="sp-charges"></div>
+        <button type="button" class="btn btn-ghost btn-sm" id="sp-add-charge">➕ Add biaya</button>
         <div class="grand">
           <span>Total <span class="fx-hint" id="sp-fx-hint"></span></span>
           <span style="text-align:right">
@@ -575,6 +578,25 @@
     $("#sp-add-line").addEventListener("click", () => addSpLine());
     $("#sp-form")._addSpLine = addSpLine;
 
+    const chargesBox = $("#sp-charges");
+    const addSpCharge = (name = "", amount = "") => {
+      const row = el(`
+        <div class="ch-row">
+          <input type="text" class="ch-name" placeholder="e.g. PPN 11% / Biaya kirim" />
+          <input type="number" class="ch-amt" step="0.01" placeholder="0" />
+          <button type="button" class="ln-del" title="Remove">✕</button>
+        </div>`);
+      row.querySelector(".ch-name").value = name;
+      if (amount !== "") row.querySelector(".ch-amt").value = amount;
+      row.querySelector(".ch-amt").addEventListener("input", recomputeSp);
+      row.querySelector(".ln-del").addEventListener("click", () => { row.remove(); recomputeSp(); });
+      chargesBox.append(row);
+      return row;
+    };
+    addSpCharge();
+    $("#sp-add-charge").addEventListener("click", () => addSpCharge());
+    $("#sp-form")._addSpCharge = addSpCharge;
+
     $('#sp-form select[name=currency]').addEventListener("change", recomputeSp);
 
     const fi = $('#sp-form input[name=invoice]');
@@ -597,6 +619,7 @@
       total += line;
       row.querySelector(".ln-line-total").textContent = line ? line.toLocaleString() : "—";
     });
+    $$("#sp-charges .ch-amt").forEach((i) => (total += Number(i.value) || 0));
     return total;
   }
 
@@ -679,11 +702,22 @@
         row.querySelector(".ln-qty").value = it.qty != null && it.qty > 0 ? it.qty : 1;
         row.querySelector(".ln-price").value = it.unit_price != null ? it.unit_price : "";
       });
+
+      // fill the biaya/charges section from the document
+      const charges = Array.isArray(parsed.charges) ? parsed.charges.filter((c) => c && c.name) : [];
+      $$("#sp-charges .ch-row").forEach((row) => {
+        const filled = row.querySelector(".ch-name").value.trim() || row.querySelector(".ch-amt").value;
+        if (!filled) row.remove();
+      });
+      charges.forEach((c) => form._addSpCharge(c.name, Number(c.amount) || 0));
+
       if (parsed.fx_rate) fxCache[cur] = parsed.fx_rate;
       await recomputeSp();
 
       // safety check: the document's own grand total vs the sum of the lines
-      const lineTotal = items.reduce((s, it) => s + (Number(it.qty) || 1) * (Number(it.unit_price) || 0), 0);
+      const lineTotal =
+        items.reduce((s, it) => s + (Number(it.qty) || 1) * (Number(it.unit_price) || 0), 0) +
+        charges.reduce((s, c) => s + (Number(c.amount) || 0), 0);
       const docTotal = Number(parsed.total);
       if (docTotal && Math.abs(docTotal - lineTotal) > Math.max(1, docTotal * 0.005)) {
         msg.textContent = `⚠ The invoice's grand total is ${money(docTotal, cur)}, but the lines add up to ${money(lineTotal, cur)} — check for missed discounts or charges before submitting.`;
@@ -722,7 +756,19 @@
     }
     if (!items.length) { msg.textContent = "Add at least one item line."; msg.className = "msg error"; return; }
 
-    const total = items.reduce((s, it) => s + it.qty * it.unit_price, 0);
+    // collect biaya / charges
+    const chargesList = [];
+    for (const row of $$("#sp-charges .ch-row")) {
+      const name = row.querySelector(".ch-name").value.trim();
+      const amt = Number(row.querySelector(".ch-amt").value) || 0;
+      if (!name && !amt) continue;
+      if (!name) { msg.textContent = "Every biaya line needs a name (e.g. PPN, Biaya kirim)."; msg.className = "msg error"; return; }
+      chargesList.push({ name, amount: amt });
+    }
+
+    const total =
+      items.reduce((s, it) => s + it.qty * it.unit_price, 0) +
+      chargesList.reduce((s, c) => s + c.amount, 0);
     if (total <= 0) { msg.textContent = "The total must be positive — check the discount lines."; msg.className = "msg error"; return; }
     const cur = form.currency.value;
 
@@ -747,6 +793,7 @@
         fx_rate: cur === "IDR" ? null : form._fxRate || null,
         idr_estimate: cur === "IDR" ? null : form._idrEstimate || null,
         items,
+        charges: chargesList.length ? chargesList : null,
         transaction_date: form.transaction_date.value || null,
         bank_name: form.bank_name.value.trim() || null,
         bank_account_name: form.bank_account_name.value.trim() || null,
@@ -2429,9 +2476,19 @@
             );
           })
           .join("");
+        const chargeRows = (Array.isArray(r.charges) ? r.charges : [])
+          .map((c) =>
+            `<tr><td></td><td colspan="3" style="text-align:right;color:var(--muted)">${esc(c.name)}</td>` +
+            (repriced && c.idr_amount != null
+              ? `<td class="amount">${money(c.idr_amount, "IDR")}<div class="paytiny">${money(c.amount, r.currency)}</div></td>`
+              : `<td class="amount">${money(c.amount, r.currency)}</td>`) +
+            `</tr>`
+          )
+          .join("");
         ls.innerHTML =
           '<div class="table-wrap"><table><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead><tbody>' +
           lineRows +
+          chargeRows +
           (repriced
             ? `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">Total paid (IDR, excl. fees)</td><td class="amount" style="font-weight:700">${money(r.idr_actual, "IDR")}<div class="paytiny">${money(r.amount, r.currency)}</div></td></tr>`
             : `<tr><td></td><td colspan="3" style="text-align:right;font-weight:700">Total</td><td class="amount" style="font-weight:700">${money(r.amount, r.currency)}</td></tr>` +
@@ -2787,6 +2844,9 @@
     };
     if (Array.isArray(r.items) && r.items.length) {
       patch.items = r.items.map((li) => ({ ...li, idr_unit_price: Math.round(Number(li.unit_price) * rate) }));
+    }
+    if (Array.isArray(r.charges) && r.charges.length) {
+      patch.charges = r.charges.map((c) => ({ ...c, idr_amount: Math.round(Number(c.amount) * rate) }));
     }
     const { error } = await sb.from("payment_requests").update(patch).eq("id", r.id);
     if (error) { toast("Repricing failed: " + error.message, "error"); return false; }

@@ -59,11 +59,14 @@ Extract:
       2. DOCUMENT-level discounts (e.g. "Discount 5%", "Special discount Rp 500.000" on the total) are then PRORATED proportionally across ALL items, on top of any line-level discounts. Example: unit price 1129 with a 5% document discount becomes unit_price 1072.55.
       3. If both exist, apply the line discount first, then prorate the document discount over the already-discounted prices.
     After prorating, the items must add up to the payable grand total; if rounding leaves a difference of a few cents, adjust the last item's unit_price so the sum matches exactly.
-  * DO include as separate lines when present: shipping / freight / handling charges, and tax (VAT / PPN) if added on top of item prices — these are real payable components, not discounts.
-  * exclude subtotal, discount, and grand-total rows themselves from items
-- "total": the payable grand total in that currency, after discounts and charges (number or null)
+  * items must contain GOODS/SERVICES ONLY — never tax, shipping, or other charges, and never subtotal/discount/total rows.
+- "charges": additional payable charges that are NOT goods, as [{"name": string, "amount": number}]
+  * examples: tax ("PPN 11%", VAT), shipping ("Biaya Kirim", freight, ongkir), handling, admin fee, insurance
+  * use the charge's name exactly as printed on the document
+  * empty array if none
+- "total": the payable grand total in that currency = items + charges, after discounts (number or null)
 Reply with ONLY the JSON object, no other text:
-{"supplier": ..., "ref_number": ..., "currency": ..., "items": [...], "total": ...}`;
+{"supplier": ..., "ref_number": ..., "currency": ..., "items": [...], "charges": [...], "total": ...}`;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -124,11 +127,13 @@ Deno.serve(async (req) => {
     if (mode === "invoice") {
       const cur = String(parsed.currency || "IDR").toUpperCase();
       parsed.currency = cur;
-      const computedTotal = parsed.items.reduce(
-        (s: number, it: { qty?: number; unit_price?: number }) =>
-          s + (Number(it.qty) || 1) * (Number(it.unit_price) || 0),
-        0,
-      );
+      if (!Array.isArray(parsed.charges)) parsed.charges = [];
+      const computedTotal =
+        parsed.items.reduce(
+          (s: number, it: { qty?: number; unit_price?: number }) =>
+            s + (Number(it.qty) || 1) * (Number(it.unit_price) || 0),
+          0,
+        ) + parsed.charges.reduce((s: number, c: { amount?: number }) => s + (Number(c.amount) || 0), 0);
       if (parsed.total == null || !(Number(parsed.total) > 0)) parsed.total = computedTotal;
 
       if (cur !== "IDR") {
