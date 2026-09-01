@@ -902,6 +902,13 @@
       const { error } = await sb.from("payment_requests").insert(payload);
       if (error) throw error;
 
+      // file the invoice in Drive and refresh the sheet (best effort)
+      if (file) {
+        const ext = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".")) : "";
+        syncFileToDrive(file, `${safeName(payload.ref_number || payload.title)} - invoice - ${safeName(payload.payee_name)}${ext}`);
+      }
+      syncToGoogleSheet({ silent: true });
+
       toast("Supplier payment request submitted ✔");
       location.hash = "#dashboard";
     } catch (err) {
@@ -2130,14 +2137,15 @@
     "Payment Status", "Amount Paid (Rp)", "Payment Date", "Payment Ref / Notes",
   ];
 
-  async function exportPurchasingCsv() {
-    toast("Preparing export…");
+  // Build the two compilation tables once; used by both the CSV export and the
+  // Google Sheets sync. Returns { invoiceRows, itemRows } including headers.
+  async function buildPurchasingRows() {
     const { data: rows, error } = await sb
       .from("payment_requests")
       .select("*")
       .order("invoice_date", { ascending: true, nullsFirst: false });
-    if (error) { toast(error.message, "error"); return; }
-    if (!rows || !rows.length) { toast("Nothing to export", "error"); return; }
+    if (error) throw new Error(error.message);
+    if (!rows || !rows.length) throw new Error("Nothing to export yet.");
 
     // payment batches carry the transfer date / reference / fees
     const batchIds = [...new Set(rows.map((r) => r.batch_id).filter(Boolean))];
@@ -2258,11 +2266,84 @@
       });
     });
 
-    const stamp = new Date().toISOString().slice(0, 10);
-    downloadCsv(`GS_Purchasing_invoices_${stamp}.csv`, lines);
-    setTimeout(() => downloadCsv(`GS_Purchasing_items_${stamp}.csv`, itemLines), 600);
-    toast(`Exported ${rows.length} invoice(s) and ${itemLines.length - 1} item line(s) ✔`);
+    return { invoiceRows: lines, itemRows: itemLines, count: rows.length };
   }
+
+  async function exportPurchasingCsv() {
+    toast("Preparing export…");
+    try {
+      const { invoiceRows, itemRows, count } = await buildPurchasingRows();
+      const stamp = new Date().toISOString().slice(0, 10);
+      downloadCsv(`GS_Purchasing_invoices_${stamp}.csv`, invoiceRows);
+      setTimeout(() => downloadCsv(`GS_Purchasing_items_${stamp}.csv`, itemRows), 600);
+      toast(`Exported ${count} invoice(s) and ${itemRows.length - 1} item line(s) ✔`);
+    } catch (e) {
+      toast(e.message || "Export failed", "error");
+    }
+  }
+
+  // ==========================================================================
+  //  GOOGLE SYNC — writes the compilation into the Sheet, files into Drive
+  // ==========================================================================
+  const googleSyncOn = () => !!(cfg.GOOGLE_SYNC_ENABLED && cfg.GOOGLE_SHEET_ID);
+
+  async function callGoogleSync(payload) {
+    const { data, error } = await sb.functions.invoke(cfg.GOOGLE_SYNC_FUNCTION || "gs-sync", { body: payload });
+    if (error) {
+      let detail = "";
+      try { detail = (await error.context?.json())?.error || ""; } catch { /* ignore */ }
+      throw new Error(detail || "Google sync is unavailable — is the gs-sync function deployed?");
+    }
+    if (data?.error) throw new Error(data.error);
+    return data;
+  }
+
+  async function syncToGoogleSheet({ silent = false } = {}) {
+    if (!googleSyncOn()) {
+      if (!silent) toast("Google sync is turned off in config.js", "error");
+      return;
+    }
+    try {
+      if (!silent) toast("Syncing to Google Sheets…");
+      const { invoiceRows, itemRows, count } = await buildPurchasingRows();
+      await callGoogleSync({
+        action: "sheet",
+        spreadsheetId: cfg.GOOGLE_SHEET_ID,
+        tabs: [
+          { name: cfg.GOOGLE_SHEET_TAB_INVOICES || "App Invoice Summary", rows: invoiceRows },
+          { name: cfg.GOOGLE_SHEET_TAB_ITEMS || "App Item Detail", rows: itemRows },
+        ],
+      });
+      if (!silent) toast(`Synced ${count} invoice(s) to Google Sheets ✔`);
+    } catch (e) {
+      // never block the app on a sync problem
+      toast("Google sync: " + (e.message || "failed"), "error");
+    }
+  }
+
+  // Upload one attachment into the Drive folder (best effort, non-blocking).
+  async function syncFileToDrive(file, filename) {
+    if (!googleSyncOn() || !cfg.GOOGLE_DRIVE_FOLDER_ID || !file) return;
+    try {
+      const b64 = await new Promise((res, rej) => {
+        const rd = new FileReader();
+        rd.onload = () => res(String(rd.result).split(",")[1]);
+        rd.onerror = rej;
+        rd.readAsDataURL(file);
+      });
+      await callGoogleSync({
+        action: "file",
+        folderId: cfg.GOOGLE_DRIVE_FOLDER_ID,
+        filename,
+        mimeType: file.type || "application/octet-stream",
+        data: b64,
+      });
+    } catch (e) {
+      toast("Drive upload: " + (e.message || "failed"), "error");
+    }
+  }
+
+  const safeName = (s) => String(s || "").replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim().slice(0, 80);
 
   function downloadCsv(filename, lines) {
     const csv = lines
@@ -2440,7 +2521,11 @@
         )
         .join("") +
       (mod === "payment"
-        ? '<span class="spacer"></span><button class="btn btn-ghost btn-sm" id="export-purchasing">⬇️ Export for GS Purchasing</button>'
+        ? '<span class="spacer"></span>' +
+          (googleSyncOn()
+            ? '<button class="btn btn-ghost btn-sm" id="sync-google">☁️ Sync to Google Sheets</button> '
+            : "") +
+          '<button class="btn btn-ghost btn-sm" id="export-purchasing">⬇️ Export for GS Purchasing</button>'
         : "");
 
     const tableFn = mod === "trip" ? tripsTable : mod === "petty" ? pettyTable : requestsTable;
@@ -2542,11 +2627,13 @@
         .in("id", ids);
       if (error) { toast(error.message, "error"); return; }
       toast(`${ids.length} item(s) ${status} ${status === "approved" ? "✔" : ""}`, status === "approved" ? "ok" : "error");
+      if (mod === "payment") syncToGoogleSheet({ silent: true });
       renderAdmin();
     };
     $("#bulk-approve")?.addEventListener("click", () => bulkReview("approved"));
     $("#bulk-reject")?.addEventListener("click", () => bulkReview("rejected"));
     $("#export-purchasing")?.addEventListener("click", exportPurchasingCsv);
+    $("#sync-google")?.addEventListener("click", () => syncToGoogleSheet());
   }
 
   // ==========================================================================
@@ -2965,6 +3052,7 @@
     }
     closeModal();
     toast(status === "approved" ? "Approved ✔" : "Rejected", status === "approved" ? "ok" : "error");
+    if (type === "payment") syncToGoogleSheet({ silent: true });
     renderAdmin();
   }
 
@@ -3222,6 +3310,14 @@
       } catch (rpErr) {
         toast("Paid, but repricing failed: " + (rpErr.message || rpErr), "error");
       }
+
+      // file the transfer proof in Drive and refresh the sheet (best effort)
+      if (file) {
+        const ext = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".")) : "";
+        const refs = items.map((it) => it.r.ref_number).filter(Boolean).join(", ");
+        syncFileToDrive(file, `${paidDate} - payment proof${refs ? " - " + safeName(refs) : ""}${bankRef ? " - " + safeName(bankRef) : ""}${ext}`);
+      }
+      syncToGoogleSheet({ silent: true });
 
       closeModal();
       toast("Payment saved — marked paid 💸");
