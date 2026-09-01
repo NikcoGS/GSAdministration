@@ -39,6 +39,9 @@
     movFilter: "assigned",
     trackModule: "receiving", // admin tracking: "receiving" | "movement"
     trackFilter: "all",
+    purchAll: null,           // cached purchasing book rows
+    purchSearch: "",
+    purchFilter: "all",
   };
 
   const LOCATIONS = ["Manhattan", "Sedayu", "Premiere"];
@@ -253,10 +256,10 @@
   function route() {
     if (!state.profile) return;
     let view = (location.hash || "#dashboard").slice(1);
-    const adminViews = ["admin", "disburse", "tracking"];
+    const adminViews = ["admin", "disburse", "tracking", "purchasing"];
     if (adminViews.includes(view) && state.profile.role !== "admin") view = "dashboard";
     const allViews = ["dashboard", "new", "trips", "newtrip", "petty", "newpetty",
-      "receiving", "newreceiving", "movements", "newmovement", "admin", "disburse", "tracking", "settings"];
+      "receiving", "newreceiving", "movements", "newmovement", "admin", "disburse", "tracking", "purchasing", "settings"];
     if (!allViews.includes(view)) view = "dashboard";
 
     $$(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.view === view));
@@ -275,6 +278,7 @@
       admin: "Admin Approvals",
       disburse: "Disburse",
       tracking: "Site Ops Tracking",
+      purchasing: "Purchasing Book",
       settings: "My Settings",
     };
     $("#view-title").textContent = titles[view];
@@ -309,6 +313,7 @@
     else if (view === "admin") renderAdmin();
     else if (view === "disburse") renderDisburse();
     else if (view === "tracking") renderTracking();
+    else if (view === "purchasing") renderPurchasing();
     else if (view === "settings") renderSettings();
   }
 
@@ -907,6 +912,7 @@
         const ext = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".")) : "";
         syncFileToDrive(file, `${safeName(payload.ref_number || payload.title)} - invoice - ${safeName(payload.payee_name)}${ext}`);
       }
+      state.purchAll = null; // purchasing book must reload
       syncToGoogleSheet({ silent: true });
 
       toast("Supplier payment request submitted ✔");
@@ -2359,6 +2365,118 @@
   }
 
   // ==========================================================================
+  //  VIEW: PURCHASING BOOK (admin) — the searchable replacement for the sheet
+  // ==========================================================================
+  async function renderPurchasing() {
+    const root = $("#view-root");
+    if (!state.purchAll) {
+      root.innerHTML = '<div class="loading">Loading the purchasing book…</div>';
+      const { data, error } = await sb
+        .from("payment_requests")
+        .select("*")
+        .order("invoice_date", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false });
+      if (error) { root.innerHTML = errorBox(error.message); return; }
+      state.purchAll = data || [];
+    }
+
+    const q = (state.purchSearch || "").trim().toLowerCase();
+    const f = state.purchFilter || "all";
+
+    // value in IDR: what was actually paid, else the invoice/estimate
+    const idrOf = (r) => {
+      if (r.idr_actual != null) return Number(r.idr_actual);
+      if ((r.currency || "IDR") === "IDR") return Number(r.amount || 0);
+      if (r.idr_estimate != null) return Number(r.idr_estimate);
+      return null;
+    };
+
+    const matches = (r) => {
+      if (f === "paid" && !r.paid_at) return false;
+      if (f === "unpaid" && (r.paid_at || r.status !== "approved")) return false;
+      if (f === "pending" && r.status !== "pending") return false;
+      if (!q) return true;
+      const hay = [
+        r.ref_number, r.payee_name, r.title, r.buyer, r.description,
+        r.bank_name, r.bank_account_number, r.payment_terms,
+        ...(Array.isArray(r.items) ? r.items.map((i) => `${i.item_name} ${i.item_code || ""}`) : []),
+      ].join(" ").toLowerCase();
+      return hay.includes(q);
+    };
+
+    const rows = state.purchAll.filter(matches);
+    const totalIdr = rows.reduce((s, r) => s + (idrOf(r) || 0), 0);
+    const unknown = rows.filter((r) => idrOf(r) == null).length;
+    const paidCount = rows.filter((r) => r.paid_at).length;
+
+    const pill = (key, label) =>
+      `<button class="filter-pill ${f === key ? "active" : ""}" data-filter="${key}">${label}</button>`;
+
+    root.innerHTML = `
+      <div class="toolbar">
+        <input id="purch-search" placeholder="Search invoice no, supplier, item, note…"
+               value="${esc(state.purchSearch || "")}" style="max-width:340px" />
+        ${pill("all", "All")}${pill("paid", "Paid")}${pill("unpaid", "Approved – unpaid")}${pill("pending", "Pending")}
+        <span class="spacer"></span>
+        <button class="btn btn-ghost btn-sm" id="purch-refresh">↻ Refresh</button>
+        <button class="btn btn-ghost btn-sm" id="purch-export">⬇️ Export CSV</button>
+      </div>
+      <div class="grand" style="margin-top:0">
+        <span>${rows.length} invoice${rows.length === 1 ? "" : "s"} · ${paidCount} paid${
+          unknown ? ` · <span class="fx-hint">${unknown} without an IDR value</span>` : ""
+        }</span>
+        <span class="amount">${money(totalIdr, "IDR")}</span>
+      </div>
+      ${
+        rows.length
+          ? `<div class="card table-wrap" style="margin-top:14px"><table>
+              <thead><tr><th>Invoice no</th><th>Date</th><th>Supplier</th><th>Amount</th><th>Status</th><th>Paid</th></tr></thead>
+              <tbody>${rows
+                .map((r) => {
+                  const idr = idrOf(r);
+                  const foreign = (r.currency || "IDR") !== "IDR";
+                  return `<tr data-id="${r.id}">
+                    <td>${esc(r.ref_number || "—")}</td>
+                    <td>${fmtDate(r.invoice_date || r.created_at)}</td>
+                    <td>${esc(r.payee_name || "—")}${
+                      r.request_type !== "supplier" ? ' <span class="type-tag">expense</span>' : ""
+                    }</td>
+                    <td class="amount">${idr != null ? money(idr, "IDR") : "—"}${
+                      foreign ? `<div class="paytiny">${money(r.amount, r.currency)}</div>` : ""
+                    }</td>
+                    <td><span class="badge ${r.status}">${r.status}</span></td>
+                    <td>${r.paid_at ? fmtDate(r.paid_at) : '<span class="paytiny">—</span>'}</td>
+                  </tr>`;
+                })
+                .join("")}</tbody></table></div>`
+          : '<div class="card panel empty"><div class="big">🔍</div><h3>Nothing matches</h3><p class="sub">Try a different search or filter.</p></div>'
+      }`;
+
+    const search = $("#purch-search");
+    let t;
+    search.addEventListener("input", () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        state.purchSearch = search.value;
+        renderPurchasing();
+        const s = $("#purch-search");
+        if (s) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
+      }, 250);
+    });
+    $$(".filter-pill", root).forEach((p) =>
+      p.addEventListener("click", () => { state.purchFilter = p.dataset.filter; renderPurchasing(); })
+    );
+    $("#purch-refresh").addEventListener("click", () => { state.purchAll = null; renderPurchasing(); });
+    $("#purch-export").addEventListener("click", exportPurchasingCsv);
+    $$("tbody tr", root).forEach((tr) =>
+      tr.addEventListener("click", () => {
+        const r = rows.find((x) => x.id === tr.dataset.id);
+        if (r) openDetail(r, true, {}, "payment");
+      })
+    );
+  }
+
+  // ==========================================================================
   //  VIEW: SITE OPS TRACKING (admin) — all receiving + movements, with reports
   // ==========================================================================
   async function renderTracking() {
@@ -2627,6 +2745,7 @@
         .in("id", ids);
       if (error) { toast(error.message, "error"); return; }
       toast(`${ids.length} item(s) ${status} ${status === "approved" ? "✔" : ""}`, status === "approved" ? "ok" : "error");
+      state.purchAll = null;
       if (mod === "payment") syncToGoogleSheet({ silent: true });
       renderAdmin();
     };
@@ -3052,6 +3171,7 @@
     }
     closeModal();
     toast(status === "approved" ? "Approved ✔" : "Rejected", status === "approved" ? "ok" : "error");
+    state.purchAll = null;
     if (type === "payment") syncToGoogleSheet({ silent: true });
     renderAdmin();
   }
@@ -3237,6 +3357,7 @@
     }
     const { error } = await sb.from("payment_requests").update(patch).eq("id", r.id);
     if (error) { toast("Repricing failed: " + error.message, "error"); return false; }
+    state.purchAll = null;
     return true;
   }
 
@@ -3317,6 +3438,7 @@
         const refs = items.map((it) => it.r.ref_number).filter(Boolean).join(", ");
         syncFileToDrive(file, `${paidDate} - payment proof${refs ? " - " + safeName(refs) : ""}${bankRef ? " - " + safeName(bankRef) : ""}${ext}`);
       }
+      state.purchAll = null; // purchasing book must reload
       syncToGoogleSheet({ silent: true });
 
       closeModal();
