@@ -25,7 +25,9 @@
       "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Reprice foreign items to actual IDR paid \\(excl. fees\\) on payment *)",
       "Bash(/usr/bin/sed -i '' 's/?v=18/?v=19/g' index.html)",
       "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Reprice-to-IDR button for already-paid foreign currency requests *)",
-      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Biaya/charges section on supplier payments \\(PPN, biaya kirim\\), read from invoice *)"
+      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Biaya/charges section on supplier payments \\(PPN, biaya kirim\\), read from invoice *)",
+      "Bash(/usr/bin/sed -i '' 's/?v=20/?v=21/g' index.html)",
+      "Bash(git -c user.name=Nikco -c user.email=nikco@golfsolutionsid.com commit -m 'Multi-select bulk approve/reject in Admin Approvals *)"
     ]
   }
 }

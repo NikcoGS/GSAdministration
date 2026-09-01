@@ -2211,7 +2211,7 @@
         '<div class="card panel empty"><div class="big">✅</div><h3>Nothing here</h3>' +
         `<p class="sub">No ${state.adminFilter === "all" ? "" : state.adminFilter} items.</p></div>`;
     } else if (!showBatches) {
-      body = tableFn(data, true, nameMap);
+      body = tableFn(data, true, nameMap, state.adminFilter === "pending");
     } else {
       body = "";
       if (unpaidRows.length) {
@@ -2244,7 +2244,14 @@
       }
     }
 
-    root.innerHTML = seg + `<div class="toolbar">${pills}</div>` + body;
+    const bulkBar = `
+      <div id="bulk-bar" class="toolbar hidden" style="gap:10px">
+        <span id="bulk-count" style="font-weight:700;font-size:13px"></span>
+        <button class="btn btn-success btn-sm" id="bulk-approve">✔ Approve selected</button>
+        <button class="btn btn-danger btn-sm" id="bulk-reject">✕ Reject selected</button>
+      </div>`;
+
+    root.innerHTML = seg + `<div class="toolbar">${pills}</div>` + bulkBar + body;
 
     $$(".seg button").forEach((b) =>
       b.addEventListener("click", () => {
@@ -2259,14 +2266,58 @@
       })
     );
     wireRowClicks(root, data, true, nameMap, mod);
+
+    // ---- multi-select approval ----
+    const updateBulk = () => {
+      const n = $$(".sel-row:checked", root).length;
+      $("#bulk-bar").classList.toggle("hidden", n === 0);
+      $("#bulk-count").textContent = `${n} selected`;
+    };
+    $$(".sel-row", root).forEach((c) => c.addEventListener("change", updateBulk));
+    const selAll = $(".sel-all", root);
+    if (selAll)
+      selAll.addEventListener("change", () => {
+        $$(".sel-row:not(:disabled)", root).forEach((c) => (c.checked = selAll.checked));
+        updateBulk();
+      });
+
+    const bulkReview = async (status) => {
+      const ids = $$(".sel-row:checked", root).map((c) => c.dataset.id);
+      if (!ids.length) return;
+      let note = null;
+      if (status === "rejected") {
+        note = prompt(`Rejecting ${ids.length} item(s) — note to the requesters (optional):`, "");
+        if (note === null) return; // cancelled
+      } else if (!confirm(`Approve ${ids.length} item(s)?`)) {
+        return;
+      }
+      const { error } = await sb
+        .from(table)
+        .update({
+          status,
+          review_note: note || null,
+          reviewed_by: state.user.id,
+          reviewed_at: new Date().toISOString(),
+        })
+        .in("id", ids);
+      if (error) { toast(error.message, "error"); return; }
+      toast(`${ids.length} item(s) ${status} ${status === "approved" ? "✔" : ""}`, status === "approved" ? "ok" : "error");
+      renderAdmin();
+    };
+    $("#bulk-approve")?.addEventListener("click", () => bulkReview("approved"));
+    $("#bulk-reject")?.addEventListener("click", () => bulkReview("rejected"));
   }
 
   // ==========================================================================
   //  Shared: request table + detail modal
   // ==========================================================================
-  function requestsTable(rows, isAdmin, nameMap = {}) {
+  const selTh = '<th style="width:34px"><input type="checkbox" class="sel-all" title="Select all" /></th>';
+  const selTd = (r) => `<td><input type="checkbox" class="sel-row" data-id="${r.id}" ${r.status === "pending" ? "" : "disabled"} /></td>`;
+
+  function requestsTable(rows, isAdmin, nameMap = {}, selectable = false) {
     const head = `
       <tr>
+        ${selectable ? selTh : ""}
         ${isAdmin ? "<th>Requester</th>" : ""}
         <th>Title</th><th>Payee</th><th>Amount</th><th>Date</th><th>Status</th>
       </tr>`;
@@ -2274,6 +2325,7 @@
       .map(
         (r) => `
         <tr data-id="${r.id}">
+          ${selectable ? selTd(r) : ""}
           ${isAdmin ? `<td>${esc(nameMap[r.requester_id] || "—")}</td>` : ""}
           <td>${r.request_type === "supplier" ? '<span class="type-tag payment">Supplier</span> ' : ""}${esc(r.title)}</td>
           <td>${esc(r.payee_name)}</td>
@@ -2290,9 +2342,10 @@
     return `<div class="card table-wrap"><table><thead>${head}</thead><tbody>${trs}</tbody></table></div>`;
   }
 
-  function tripsTable(rows, isAdmin, nameMap = {}) {
+  function tripsTable(rows, isAdmin, nameMap = {}, selectable = false) {
     const head = `
       <tr>
+        ${selectable ? selTh : ""}
         ${isAdmin ? "<th>Requester</th>" : ""}
         <th>Purpose</th><th>Vehicle</th><th>Km</th><th>Amount</th><th>Trip date</th><th>Status</th>
       </tr>`;
@@ -2300,6 +2353,7 @@
       .map(
         (r) => `
         <tr data-id="${r.id}">
+          ${selectable ? selTd(r) : ""}
           ${isAdmin ? `<td>${esc(nameMap[r.requester_id] || "—")}</td>` : ""}
           <td>${esc(r.trip_purpose || "—")}</td>
           <td>${esc(r.vehicle_option || "—")}</td>
@@ -2313,9 +2367,10 @@
     return `<div class="card table-wrap"><table><thead>${head}</thead><tbody>${trs}</tbody></table></div>`;
   }
 
-  function pettyTable(rows, isAdmin, nameMap = {}) {
+  function pettyTable(rows, isAdmin, nameMap = {}, selectable = false) {
     const head = `
       <tr>
+        ${selectable ? selTh : ""}
         ${isAdmin ? "<th>Requester</th>" : ""}
         <th>Title</th><th>Claim date</th><th>Grand total</th><th>Status</th>
       </tr>`;
@@ -2323,6 +2378,7 @@
       .map(
         (r) => `
         <tr data-id="${r.id}">
+          ${selectable ? selTd(r) : ""}
           ${isAdmin ? `<td>${esc(nameMap[r.requester_id] || "—")}</td>` : ""}
           <td>${esc(r.title || "Petty cash reimbursement")}</td>
           <td>${fmtDate(r.claim_date || r.created_at)}</td>
@@ -2336,7 +2392,8 @@
 
   function wireRowClicks(root, rows, isAdmin, nameMap = {}, type = "payment") {
     $$("tbody tr", root).forEach((tr) =>
-      tr.addEventListener("click", () => {
+      tr.addEventListener("click", (e) => {
+        if (e.target.closest(".sel-row, .sel-all")) return; // checkbox clicks don't open the detail
         const r = rows.find((x) => x.id === tr.dataset.id);
         if (r) openDetail(r, isAdmin, nameMap, type);
       })
