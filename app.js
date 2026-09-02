@@ -2435,14 +2435,20 @@
                 .map((r) => {
                   const idr = idrOf(r);
                   const foreign = (r.currency || "IDR") !== "IDR";
+                  // an estimate, not a settled figure: foreign and not yet repriced
+                  const estimated = foreign && r.idr_actual == null;
+                  const docs =
+                    (Array.isArray(r.drive_invoice_files) && r.drive_invoice_files.length ? "📄" : "") +
+                    (Array.isArray(r.drive_payment_files) && r.drive_payment_files.length ? "🧾" : "") +
+                    (r.invoice_path ? "📎" : "");
                   return `<tr data-id="${r.id}">
-                    <td>${esc(r.ref_number || "—")}</td>
+                    <td>${esc(r.ref_number || "—")}${docs ? ` <span title="documents attached">${docs}</span>` : ""}</td>
                     <td>${fmtDate(r.invoice_date || r.created_at)}</td>
                     <td>${esc(r.payee_name || "—")}${
                       r.request_type !== "supplier" ? ' <span class="type-tag">expense</span>' : ""
                     }</td>
-                    <td class="amount">${idr != null ? money(idr, "IDR") : "—"}${
-                      foreign ? `<div class="paytiny">${money(r.amount, r.currency)}</div>` : ""
+                    <td class="amount">${idr != null ? (estimated ? "≈ " : "") + money(idr, "IDR") : "—"}${
+                      foreign ? `<div class="paytiny">${money(r.amount, r.currency)}${estimated ? " · estimate" : ""}</div>` : ""
                     }</td>
                     <td><span class="badge ${r.status}">${r.status}</span></td>
                     <td>${r.paid_at ? fmtDate(r.paid_at) : '<span class="paytiny">—</span>'}</td>
@@ -3051,6 +3057,21 @@
             r.total_amount, r.currency
           )}</td><td></td></tr></tbody></table></div>`;
       }
+    }
+
+    // documents that live in Google Drive (historical imports)
+    if (type === "payment" && !opts.hidePrices) {
+      const driveSlot = card.querySelector("#file-slot");
+      const driveDocs = [
+        ...(Array.isArray(r.drive_invoice_files) ? r.drive_invoice_files.map((d) => ({ ...d, icon: "📄" })) : []),
+        ...(Array.isArray(r.drive_payment_files) ? r.drive_payment_files.map((d) => ({ ...d, icon: "🧾" })) : []),
+      ];
+      driveDocs.forEach((d) => {
+        const label = d.name && d.name.length > 46 ? d.name.slice(0, 44) + "…" : d.name || "Document";
+        driveSlot.append(
+          el(`<a class="btn btn-ghost btn-sm" href="${esc(d.url)}" target="_blank" rel="noopener" title="${esc(d.name || "")}">${d.icon} ${esc(label)}</a>`)
+        );
+      });
     }
 
     // file links (signed URLs)
