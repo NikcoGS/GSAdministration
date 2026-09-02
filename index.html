@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GS Operational System</title>
-  <link rel="stylesheet" href="styles.css?v=30" />
+  <link rel="stylesheet" href="styles.css?v=31" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛳</text></svg>" />
 </head>
 <body>
@@ -62,25 +62,26 @@
         <span id="side-title">GS Operational</span>
       </div>
       <nav class="nav">
-        <div class="nav-group">Payments</div>
-        <a href="#dashboard"  class="nav-item" data-view="dashboard">📋 My Requests</a>
-        <a href="#new"        class="nav-item" data-view="new">➕ New Payment Request</a>
-        <div class="nav-group">Trip reimbursement</div>
-        <a href="#trips"      class="nav-item" data-view="trips">🚗 My Trip Claims</a>
-        <a href="#newtrip"    class="nav-item" data-view="newtrip">➕ New Trip Claim</a>
-        <div class="nav-group">Petty cash</div>
-        <a href="#petty"      class="nav-item" data-view="petty">🧾 My Petty Cash</a>
-        <a href="#newpetty"   class="nav-item" data-view="newpetty">➕ New Petty Cash</a>
-        <div class="nav-group">Site operations</div>
-        <a href="#receiving"    class="nav-item" data-view="receiving">📥 Receiving</a>
-        <a href="#newreceiving" class="nav-item" data-view="newreceiving">➕ New Receiving</a>
-        <a href="#movements"    class="nav-item" data-view="movements">🔄 Store Movement</a>
-        <a href="#newmovement"  class="nav-item" data-view="newmovement">➕ New Movement</a>
-        <div class="nav-group admin-only">Admin</div>
-        <a href="#admin"      class="nav-item admin-only" data-view="admin">🛡️ Admin Approvals</a>
-        <a href="#disburse"   class="nav-item admin-only" data-view="disburse">💸 Disburse</a>
-        <a href="#tracking"   class="nav-item admin-only" data-view="tracking">📦 Site Ops Tracking</a>
-        <a href="#purchasing" class="nav-item admin-only" data-view="purchasing">📚 Purchasing Book</a>
+        <div class="nav-group" data-feat="payment">Payments</div>
+        <a href="#dashboard"  class="nav-item" data-view="dashboard" data-feat="payment">📋 My Requests</a>
+        <a href="#new"        class="nav-item" data-view="new" data-feat="payment">➕ New Payment Request</a>
+        <div class="nav-group" data-feat="trip">Trip reimbursement</div>
+        <a href="#trips"      class="nav-item" data-view="trips" data-feat="trip">🚗 My Trip Claims</a>
+        <a href="#newtrip"    class="nav-item" data-view="newtrip" data-feat="trip">➕ New Trip Claim</a>
+        <div class="nav-group" data-feat="petty">Petty cash</div>
+        <a href="#petty"      class="nav-item" data-view="petty" data-feat="petty">🧾 My Petty Cash</a>
+        <a href="#newpetty"   class="nav-item" data-view="newpetty" data-feat="petty">➕ New Petty Cash</a>
+        <div class="nav-group" data-feat="siteops">Site operations</div>
+        <a href="#receiving"    class="nav-item" data-view="receiving" data-feat="siteops">📥 Receiving</a>
+        <a href="#newreceiving" class="nav-item" data-view="newreceiving" data-feat="siteops">➕ New Receiving</a>
+        <a href="#movements"    class="nav-item" data-view="movements" data-feat="siteops">🔄 Store Movement</a>
+        <a href="#newmovement"  class="nav-item" data-view="newmovement" data-feat="siteops">➕ New Movement</a>
+        <div class="nav-group" data-feat="_anyadmin">Admin</div>
+        <a href="#admin"      class="nav-item" data-view="admin" data-feat="approval">🛡️ Admin Approvals</a>
+        <a href="#disburse"   class="nav-item" data-view="disburse" data-feat="disburse">💸 Disburse</a>
+        <a href="#tracking"   class="nav-item" data-view="tracking" data-feat="tracking">📦 Site Ops Tracking</a>
+        <a href="#purchasing" class="nav-item" data-view="purchasing" data-feat="purchasing">📚 Purchasing Book</a>
+        <a href="#users"      class="nav-item admin-only" data-view="users">👥 Users &amp; Access</a>
         <div class="nav-group">Account</div>
         <a href="#settings"   class="nav-item" data-view="settings">⚙️ My Settings</a>
       </nav>
@@ -118,7 +119,7 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="config.js?v=30"></script>
-  <script src="app.js?v=30"></script>
+  <script src="config.js?v=31"></script>
+  <script src="app.js?v=31"></script>
 </body>
 </html>

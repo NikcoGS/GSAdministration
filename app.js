@@ -46,6 +46,29 @@
 
   const LOCATIONS = ["Manhattan", "Sedayu", "Premiere"];
 
+  // ---- feature access -------------------------------------------------------
+  const FEATURES = [
+    ["payment", "💳 Payment requests"],
+    ["trip", "🚗 Trip reimbursement"],
+    ["petty", "🧾 Petty cash"],
+    ["siteops", "📥 Site operations"],
+    ["approval", "🛡️ Admin approvals"],
+    ["disburse", "💸 Disburse"],
+    ["tracking", "📦 Site ops tracking"],
+    ["purchasing", "📚 Purchasing book"],
+  ];
+  const EMPLOYEE_DEFAULT = ["payment", "trip", "petty", "siteops"];
+  const ADMIN_FEATURES = ["approval", "disburse", "tracking", "purchasing"];
+
+  // mirrors public.has_perm() in the database
+  function permsOf(profile) {
+    if (!profile) return [];
+    if (Array.isArray(profile.permissions)) return profile.permissions;
+    return profile.role === "admin" ? FEATURES.map((f) => f[0]) : EMPLOYEE_DEFAULT;
+  }
+  const can = (feature) => permsOf(state.profile).includes(feature);
+  const canAny = (list) => list.some((f) => can(f));
+
   // Apply cosmetic config
   if (cfg.APP_NAME) {
     $("#brand-title").textContent = cfg.APP_NAME;
@@ -223,6 +246,13 @@
     const isAdmin = p.role === "admin";
     $$(".admin-only").forEach((n) => n.classList.toggle("hidden", !isAdmin));
 
+    // hide anything this user has no feature access to
+    $$("[data-feat]").forEach((n) => {
+      const f = n.dataset.feat;
+      const allowed = f === "_anyadmin" ? canAny(ADMIN_FEATURES) || isAdmin : can(f);
+      n.classList.toggle("hidden", !allowed);
+    });
+
     route();
   }
 
@@ -256,11 +286,25 @@
   function route() {
     if (!state.profile) return;
     let view = (location.hash || "#dashboard").slice(1);
-    const adminViews = ["admin", "disburse", "tracking", "purchasing"];
-    if (adminViews.includes(view) && state.profile.role !== "admin") view = "dashboard";
     const allViews = ["dashboard", "new", "trips", "newtrip", "petty", "newpetty",
-      "receiving", "newreceiving", "movements", "newmovement", "admin", "disburse", "tracking", "purchasing", "settings"];
+      "receiving", "newreceiving", "movements", "newmovement", "admin", "disburse",
+      "tracking", "purchasing", "users", "settings"];
     if (!allViews.includes(view)) view = "dashboard";
+
+    // feature gating: send people to something they can actually open
+    const VIEW_FEATURE = {
+      dashboard: "payment", new: "payment",
+      trips: "trip", newtrip: "trip",
+      petty: "petty", newpetty: "petty",
+      receiving: "siteops", newreceiving: "siteops", movements: "siteops", newmovement: "siteops",
+      admin: "approval", disburse: "disburse", tracking: "tracking", purchasing: "purchasing",
+    };
+    if (view === "users" && state.profile.role !== "admin") view = "settings";
+    const needed = VIEW_FEATURE[view];
+    if (needed && !can(needed)) {
+      const firstAllowed = Object.keys(VIEW_FEATURE).find((v) => can(VIEW_FEATURE[v]));
+      view = firstAllowed || "settings";
+    }
 
     $$(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.view === view));
 
@@ -279,6 +323,7 @@
       disburse: "Disburse",
       tracking: "Site Ops Tracking",
       purchasing: "Purchasing Book",
+      users: "Users & Access",
       settings: "My Settings",
     };
     $("#view-title").textContent = titles[view];
@@ -314,6 +359,7 @@
     else if (view === "disburse") renderDisburse();
     else if (view === "tracking") renderTracking();
     else if (view === "purchasing") renderPurchasing();
+    else if (view === "users") renderUsers();
     else if (view === "settings") renderSettings();
   }
 
@@ -3847,6 +3893,90 @@
     w.document.open();
     w.document.write(doc);
     w.document.close();
+  }
+
+  // ==========================================================================
+  //  VIEW: USERS & ACCESS (admin) — who can use which feature
+  // ==========================================================================
+  async function renderUsers() {
+    const root = $("#view-root");
+    root.innerHTML = '<div class="loading">Loading users…</div>';
+
+    const { data, error } = await sb
+      .from("profiles")
+      .select("id,full_name,email,role,permissions")
+      .order("full_name");
+    if (error) { root.innerHTML = errorBox(error.message); return; }
+
+    const rows = (data || [])
+      .map((u) => {
+        const perms = permsOf(u);
+        const custom = Array.isArray(u.permissions);
+        const cells = FEATURES.map(
+          ([key]) =>
+            `<td style="text-align:center"><input type="checkbox" class="perm" data-uid="${u.id}" data-feat="${key}" ${
+              perms.includes(key) ? "checked" : ""
+            } style="width:18px;height:18px;accent-color:var(--green-600)" /></td>`
+        ).join("");
+        return `<tr data-uid="${u.id}">
+          <td>
+            <div style="font-weight:600">${esc(u.full_name || "—")}${
+              u.id === state.user.id ? ' <span class="type-tag">you</span>' : ""
+            }</div>
+            <div class="paytiny">${esc(u.email || "")}</div>
+          </td>
+          <td>
+            <select class="role-sel" data-uid="${u.id}" ${u.id === state.user.id ? "disabled title='You cannot change your own role'" : ""}>
+              <option value="employee" ${u.role !== "admin" ? "selected" : ""}>employee</option>
+              <option value="admin" ${u.role === "admin" ? "selected" : ""}>admin</option>
+            </select>
+          </td>
+          ${cells}
+          <td class="paytiny" data-state="${u.id}">${custom ? "custom" : "role default"}</td>
+        </tr>`;
+      })
+      .join("");
+
+    root.innerHTML = `
+      <div class="card panel" style="margin-bottom:14px">
+        <h3 style="margin:0 0 4px">Feature access</h3>
+        <p class="sub" style="margin:0">Tick what each person can open. Changes save immediately and are enforced by the
+        database, not just the menus. A user left on <b>role default</b> gets the standard set for their role —
+        employees get the four request features, admins get everything.</p>
+      </div>
+      <div class="card table-wrap"><table>
+        <thead><tr>
+          <th>User</th><th>Role</th>
+          ${FEATURES.map(([, label]) => `<th style="text-align:center;font-size:10px">${label.replace(" ", "<br>")}</th>`).join("")}
+          <th>Access</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <p id="users-msg" class="msg"></p>`;
+
+    const msg = $("#users-msg");
+
+    const savePerms = async (uid) => {
+      const list = $$(`.perm[data-uid="${uid}"]`).filter((c) => c.checked).map((c) => c.dataset.feat);
+      const { error: e } = await sb.from("profiles").update({ permissions: list }).eq("id", uid);
+      if (e) { msg.textContent = e.message; msg.className = "msg error"; return; }
+      const tag = $(`[data-state="${uid}"]`);
+      if (tag) tag.textContent = "custom";
+      msg.textContent = "Saved ✔";
+      msg.className = "msg ok";
+      if (uid === state.user.id) { await loadProfile(); showApp(); location.hash = "#users"; }
+    };
+
+    $$(".perm", root).forEach((c) => c.addEventListener("change", () => savePerms(c.dataset.uid)));
+
+    $$(".role-sel", root).forEach((s) =>
+      s.addEventListener("change", async () => {
+        const { error: e } = await sb.from("profiles").update({ role: s.value }).eq("id", s.dataset.uid);
+        if (e) { msg.textContent = e.message; msg.className = "msg error"; return; }
+        msg.textContent = `Role set to ${s.value} ✔`;
+        msg.className = "msg ok";
+      })
+    );
   }
 
   // ==========================================================================
