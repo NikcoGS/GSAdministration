@@ -2798,8 +2798,12 @@
           <td>${esc(r.payee_name)}</td>
           <td class="amount">${
             r.idr_actual
+              // settled: the IDR that actually left the bank leads
               ? `${money(r.idr_actual, "IDR")}<div class="paytiny">${money(r.amount, r.currency)} paid</div>`
-              : `${money(r.amount, r.currency)}${r.idr_estimate ? `<div class="paytiny">≈ ${money(r.idr_estimate, "IDR")}</div>` : ""}`
+              // not settled: the original amount is the real figure
+              : `${money(r.amount, r.currency)}${
+                  r.idr_estimate ? `<div class="paytiny">≈ ${money(r.idr_estimate, "IDR")} est.</div>` : ""
+                }`
           }</td>
           <td>${fmtDate(r.transaction_date || r.created_at)}</td>
           <td><span class="badge ${r.status}">${r.status}</span></td>
@@ -2882,6 +2886,19 @@
       amount: (r) => r.total_amount, currency: (r) => r.currency,
     },
   };
+
+  // Value in IDR: what was actually paid if known, otherwise the estimate.
+  // Returns null when a foreign amount has no IDR figure at all.
+  function idrValue(type, r) {
+    const cur = TYPES[type].currency(r) || "IDR";
+    const amt = Number(TYPES[type].amount(r) || 0);
+    if (cur === "IDR") return amt;
+    if (r.idr_actual != null) return Number(r.idr_actual);
+    if (r.idr_estimate != null) return Number(r.idr_estimate);
+    return null;
+  }
+  const isEstimated = (type, r) =>
+    (TYPES[type].currency(r) || "IDR") !== "IDR" && r.idr_actual == null;
 
   async function openDetail(r, isAdmin, nameMap = {}, type = "payment", opts = {}) {
     const requester = nameMap[r.requester_id] || (r.requester_id === state.user.id ? "You" : "—");
@@ -3555,14 +3572,22 @@
           )}</span>${p.bank_account_name ? " · " + esc(p.bank_account_name) : ""}</div>`
         : `<div class="dg-bank missing">⚠️ No rekening on file — ask ${esc(name)} to set it in My Settings</div>`;
 
-      // per-currency subtotal
+      // per-currency subtotal (what you actually transfer), plus an IDR equivalent
       const totals = {};
+      let gIdr = 0, gForeign = false, gUnknown = false;
       groupItems.forEach((it) => {
         const cur = TYPES[it.type].currency(it.r) || "IDR";
         const amt = Number(TYPES[it.type].amount(it.r) || 0);
         totals[cur] = (totals[cur] || 0) + amt;
+        if (cur !== "IDR") gForeign = true;
+        const v = idrValue(it.type, it.r);
+        if (v == null) gUnknown = true; else gIdr += v;
       });
-      const totalStr = Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ");
+      const totalStr =
+        Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ") +
+        (gForeign
+          ? `<div class="fx-hint" style="font-weight:600">≈ ${money(gIdr, "IDR")} est.${gUnknown ? " + unknown" : ""}</div>`
+          : "");
 
       // sub-group by destination account: supplier/payee for payment requests,
       // the employee's own rekening for reimbursements. One transfer per group.
@@ -3594,11 +3619,19 @@
           const di = destList.length - 1;
 
           const dTotals = {};
+          let dIdr = 0, dForeign = false, dUnknown = false;
           d.items.forEach((it) => {
             const c = TYPES[it.type].currency(it.r) || "IDR";
             dTotals[c] = (dTotals[c] || 0) + Number(TYPES[it.type].amount(it.r) || 0);
+            if (c !== "IDR") dForeign = true;
+            const v = idrValue(it.type, it.r);
+            if (v == null) dUnknown = true; else dIdr += v;
           });
-          const dTotalStr = Object.entries(dTotals).map(([c, v]) => money(v, c)).join(" + ");
+          const dTotalStr =
+            Object.entries(dTotals).map(([c, v]) => money(v, c)).join(" + ") +
+            (dForeign
+              ? `<div class="fx-hint">≈ ${money(dIdr, "IDR")}${dUnknown ? " + unknown" : ""}</div>`
+              : "");
           const acctLine = d.acct
             ? `${esc(d.bank || "Bank")} · <span class="rek">${esc(d.acct)}</span>${d.holder ? " · " + esc(d.holder) : ""}`
             : '<span class="missing">⚠️ no account on file</span>';
@@ -3607,12 +3640,18 @@
             .map((it) => {
               const { type, r } = it;
               const amt = TYPES[type].amount(r);
+              const cur = TYPES[type].currency(r) || "IDR";
+              const idrEq = idrValue(type, r);
               return `
                 <tr data-type="${type}" data-id="${r.id}">
                   <td><span class="type-tag ${type}">${TYPES[type].label}</span></td>
                   <td>${esc(TYPES[type].title(r))}</td>
                   <td>${fmtDate(r.reviewed_at)}</td>
-                  <td class="amount">${amt != null ? money(amt, TYPES[type].currency(r)) : "—"}</td>
+                  <td class="amount">${amt != null ? money(amt, cur) : "—"}${
+                    cur !== "IDR"
+                      ? `<div class="paytiny">${idrEq != null ? "≈ " + money(idrEq, "IDR") + " est." : "no IDR estimate"}</div>`
+                      : ""
+                  }</td>
                   <td><button class="btn btn-ghost btn-sm mark-paid" data-type="${type}" data-id="${r.id}">Pay this only</button></td>
                 </tr>`;
             })
