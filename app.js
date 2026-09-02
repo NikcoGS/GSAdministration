@@ -2408,6 +2408,10 @@
     const totalIdr = rows.reduce((s, r) => s + (idrOf(r) || 0), 0);
     const unknown = rows.filter((r) => idrOf(r) == null).length;
     const paidCount = rows.filter((r) => r.paid_at).length;
+    // foreign rows not yet repriced contribute an estimated IDR to the total
+    const estimatedCount = rows.filter(
+      (r) => (r.currency || "IDR") !== "IDR" && r.idr_actual == null && idrOf(r) != null
+    ).length;
 
     const pill = (key, label) =>
       `<button class="filter-pill ${f === key ? "active" : ""}" data-filter="${key}">${label}</button>`;
@@ -2423,9 +2427,11 @@
       </div>
       <div class="grand" style="margin-top:0">
         <span>${rows.length} invoice${rows.length === 1 ? "" : "s"} · ${paidCount} paid${
-          unknown ? ` · <span class="fx-hint">${unknown} without an IDR value</span>` : ""
+          estimatedCount ? ` · <span class="fx-hint">incl. ${estimatedCount} estimated</span>` : ""
+        }${unknown ? ` · <span class="fx-hint">${unknown} without an IDR value</span>` : ""}</span>
+        <span class="amount">${money(totalIdr, "IDR")}${
+          estimatedCount ? '<div class="fx-hint" style="text-align:right">estimated where unpaid</div>' : ""
         }</span>
-        <span class="amount">${money(totalIdr, "IDR")}</span>
       </div>
       ${
         rows.length
@@ -2447,8 +2453,16 @@
                     <td>${esc(r.payee_name || "—")}${
                       r.request_type !== "supplier" ? ' <span class="type-tag">expense</span>' : ""
                     }</td>
-                    <td class="amount">${idr != null ? (estimated ? "≈ " : "") + money(idr, "IDR") : "—"}${
-                      foreign ? `<div class="paytiny">${money(r.amount, r.currency)}${estimated ? " · estimate" : ""}</div>` : ""
+                    <td class="amount">${
+                      estimated
+                        // not settled yet: the foreign amount is the real figure,
+                        // the IDR underneath is only an estimate for totalling
+                        ? `${money(r.amount, r.currency)}<div class="paytiny">${
+                            idr != null ? "≈ " + money(idr, "IDR") + " est." : "no IDR estimate"
+                          }</div>`
+                        : `${idr != null ? money(idr, "IDR") : "—"}${
+                            foreign ? `<div class="paytiny">${money(r.amount, r.currency)} paid</div>` : ""
+                          }`
                     }</td>
                     <td><span class="badge ${r.status}">${r.status}</span></td>
                     <td>${r.paid_at ? fmtDate(r.paid_at) : '<span class="paytiny">—</span>'}</td>
