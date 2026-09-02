@@ -1459,7 +1459,12 @@
       .eq("status", "approved")
       .order("reviewed_at", { ascending: false });
     const linked = new Set((data || []).map((o) => o.payment_request_id).filter(Boolean));
-    const toReceive = (purchases || []).filter((p) => !linked.has(p.id));
+    // purchases marked as "no goods to receive" (service invoices etc.)
+    const { data: dismissals } = await sb.from("receiving_dismissals").select("payment_request_id");
+    const dismissed = new Set((dismissals || []).map((d) => d.payment_request_id));
+    const notLinked = (purchases || []).filter((p) => !linked.has(p.id));
+    const toReceive = notLinked.filter((p) => !dismissed.has(p.id));
+    const hiddenCount = notLinked.length - toReceive.length;
 
     const f = state.recvFilter;
     const rows = (data || []).filter((r) =>
@@ -1483,10 +1488,26 @@
                 <td>${esc(p.payee_name)}</td>
                 <td>${esc(p.title)}</td>
                 <td>${fmtDate(p.reviewed_at)}</td>
-                <td><button class="btn btn-primary btn-sm start-recv" data-id="${p.id}">📥 Start receiving</button></td>
+                <td style="white-space:nowrap">
+                  <button class="btn btn-primary btn-sm start-recv" data-id="${p.id}">📥 Start receiving</button>
+                  <button class="btn btn-ghost btn-sm dismiss-recv" data-id="${p.id}" title="No goods to receive — remove from this list">✕</button>
+                </td>
               </tr>`
             )
             .join("")}</tbody></table></div>
+        ${
+          hiddenCount
+            ? `<p class="sub" style="margin:10px 0 0">${hiddenCount} purchase${
+                hiddenCount === 1 ? "" : "s"
+              } marked as needing no receiving. <a href="#" id="show-dismissed">Show them</a></p>`
+            : ""
+        }
+      </div>`;
+    } else if (hiddenCount) {
+      html += `<div class="card panel" style="margin-bottom:16px">
+        <p class="sub" style="margin:0">${hiddenCount} approved purchase${
+          hiddenCount === 1 ? "" : "s"
+        } marked as needing no receiving. <a href="#" id="show-dismissed">Show them</a></p>
       </div>`;
     }
 
@@ -1533,12 +1554,64 @@
         location.hash = "#newreceiving";
       })
     );
+
+    // mark a purchase as "no goods to receive" (service invoices, fees, …)
+    $$(".dismiss-recv", root).forEach((b) =>
+      b.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const p = toReceive.find((x) => x.id === b.dataset.id);
+        if (!p) return;
+        if (!confirm(`Remove "${p.ref_number || p.title}" from the receiving list?\n\nUse this for invoices with no goods to check (services, courier, commission). It can be restored later.`)) return;
+        b.disabled = true;
+        const { error: dErr } = await sb.from("receiving_dismissals").insert({
+          payment_request_id: p.id, dismissed_by: state.user.id,
+        });
+        if (dErr) { toast(dErr.message, "error"); b.disabled = false; return; }
+        toast("Removed from the receiving list");
+        renderReceiving();
+      })
+    );
+
+    // restore anything previously dismissed
+    $("#show-dismissed")?.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const hidden = notLinked.filter((p) => dismissed.has(p.id));
+      const card = el(`
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:start;gap:12px">
+            <h3 style="margin:0">Purchases needing no receiving</h3>
+            <button class="btn btn-ghost btn-sm" data-close>✕</button>
+          </div>
+          <p class="sub">These were removed from the receiving list. Restore any that do have goods to check.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Ref / PO</th><th>Supplier</th><th>Purchase</th><th></th></tr></thead>
+            <tbody>${hidden
+              .map(
+                (p) => `<tr><td>${esc(p.ref_number || "—")}</td><td>${esc(p.payee_name || "—")}</td>
+                  <td>${esc(p.title || "")}</td>
+                  <td><button class="btn btn-ghost btn-sm restore-recv" data-id="${p.id}">↩︎ Restore</button></td></tr>`
+              )
+              .join("")}</tbody></table></div>
+        </div>`);
+      openModal(card);
+      $$(".restore-recv", card).forEach((rb) =>
+        rb.addEventListener("click", async () => {
+          rb.disabled = true;
+          const { error: rErr } = await sb
+            .from("receiving_dismissals").delete().eq("payment_request_id", rb.dataset.id);
+          if (rErr) { toast(rErr.message, "error"); rb.disabled = false; return; }
+          closeModal();
+          toast("Restored to the receiving list");
+          renderReceiving();
+        })
+      );
+    });
     // purchase rows open the payment request's detail popup
     const dirNameMap = {};
     (state.users || []).forEach((u) => (dirNameMap[u.id] = u.full_name || u.email));
     $$("tr[data-pid]", root).forEach((tr) =>
       tr.addEventListener("click", (e) => {
-        if (e.target.closest(".start-recv")) return;
+        if (e.target.closest(".start-recv, .dismiss-recv")) return;
         const p = toReceive.find((x) => x.id === tr.dataset.pid);
         if (p) openDetail(p, state.profile.role === "admin", dirNameMap, "payment", { hidePrices: true });
       })
