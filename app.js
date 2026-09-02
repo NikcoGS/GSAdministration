@@ -394,7 +394,7 @@
       return;
     }
 
-    root.innerHTML = requestsTable(data, false);
+    root.innerHTML = statusSections(data, requestsTable);
     wireRowClicks(root, data, false);
   }
 
@@ -1002,7 +1002,7 @@
       return;
     }
 
-    root.innerHTML = tripsTable(data, false);
+    root.innerHTML = statusSections(data, tripsTable);
     wireRowClicks(root, data, false, {}, "trip");
   }
 
@@ -1180,7 +1180,7 @@
       return;
     }
 
-    root.innerHTML = pettyTable(data, false);
+    root.innerHTML = statusSections(data, pettyTable, { amountOf: (r) => r.total_amount });
     wireRowClicks(root, data, false, {}, "petty");
   }
 
@@ -1391,6 +1391,40 @@
     }
     if (!lines.length) { msgEl.textContent = "Add at least one item."; msgEl.className = "msg error"; return null; }
     return lines;
+  }
+
+  // Group a person's own records into collapsible status sections.
+  // Pending opens by default (that's what still needs watching).
+  function statusSections(rows, tableFn, opts = {}) {
+    const ORDER = [
+      ["pending", "⏳ Pending", true],
+      ["approved", "✅ Approved", false],
+      ["rejected", "✕ Rejected", false],
+    ];
+    const totalOf = (list) => {
+      const t = {};
+      list.forEach((r) => {
+        const cur = (r.currency || "IDR").toUpperCase();
+        const amt = Number(opts.amountOf ? opts.amountOf(r) : r.amount) || 0;
+        if (amt) t[cur] = (t[cur] || 0) + amt;
+      });
+      const s = Object.entries(t).map(([c, v]) => money(v, c)).join(" + ");
+      return s || "";
+    };
+    return ORDER.filter(([key]) => rows.some((r) => r.status === key))
+      .map(([key, label, open]) => {
+        const group = rows.filter((r) => r.status === key);
+        const sum = totalOf(group);
+        return (
+          `<details class="batch-sec"${open ? " open" : ""}>` +
+          `<summary class="section-h${key === "approved" ? " paid" : ""}">${label} (${group.length})${
+            sum ? ` · <b>${sum}</b>` : ""
+          }</summary>` +
+          tableFn(group, false) +
+          `</details>`
+        );
+      })
+      .join("");
   }
 
   const filterPills = (current, options) =>
