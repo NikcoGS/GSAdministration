@@ -288,7 +288,7 @@
     let view = (location.hash || "#dashboard").slice(1);
     const allViews = ["dashboard", "new", "trips", "newtrip", "petty", "newpetty",
       "receiving", "newreceiving", "movements", "newmovement", "admin", "disburse",
-      "tracking", "purchasing", "users", "settings"];
+      "tracking", "purchasing", "users", "settings", "noaccess"];
     if (!allViews.includes(view)) view = "dashboard";
 
     // feature gating: send people to something they can actually open
@@ -300,10 +300,15 @@
       admin: "approval", disburse: "disburse", tracking: "tracking", purchasing: "purchasing",
     };
     if (view === "users" && state.profile.role !== "admin") view = "settings";
+
+    // brand-new account with nothing granted yet
+    const noAccess = permsOf(state.profile).length === 0 && state.profile.role !== "admin";
+    if (noAccess && view !== "settings") view = "noaccess";
+
     const needed = VIEW_FEATURE[view];
     if (needed && !can(needed)) {
       const firstAllowed = Object.keys(VIEW_FEATURE).find((v) => can(VIEW_FEATURE[v]));
-      view = firstAllowed || "settings";
+      view = firstAllowed || (noAccess ? "noaccess" : "settings");
     }
 
     $$(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.view === view));
@@ -325,6 +330,7 @@
       purchasing: "Purchasing Book",
       users: "Users & Access",
       settings: "My Settings",
+      noaccess: "Welcome",
     };
     $("#view-title").textContent = titles[view];
 
@@ -361,6 +367,7 @@
     else if (view === "purchasing") renderPurchasing();
     else if (view === "users") renderUsers();
     else if (view === "settings") renderSettings();
+    else if (view === "noaccess") renderNoAccess();
   }
 
   // ==========================================================================
@@ -3896,6 +3903,21 @@
   }
 
   // ==========================================================================
+  //  VIEW: NO ACCESS — a newly registered account, nothing granted yet
+  // ==========================================================================
+  function renderNoAccess() {
+    $("#view-root").innerHTML = `
+      <div class="card panel empty" style="max-width:560px;margin:0 auto">
+        <div class="big">👋</div>
+        <h3>Welcome, ${esc((state.profile.full_name || state.profile.email || "").split(" ")[0])}</h3>
+        <p class="sub">Your account is created, but an administrator hasn't given you access to any
+        features yet. Please ask them to enable what you need — then reload this page.</p>
+        <p class="sub">In the meantime you can fill in your bank details so reimbursements are ready to be paid.</p>
+        <button class="btn btn-primary" data-nav="#settings">⚙️ Open My Settings</button>
+      </div>`;
+  }
+
+  // ==========================================================================
   //  VIEW: USERS & ACCESS (admin) — who can use which feature
   // ==========================================================================
   async function renderUsers() {
@@ -3932,7 +3954,12 @@
             </select>
           </td>
           ${cells}
-          <td class="paytiny" data-state="${u.id}">${custom ? "custom" : "role default"}</td>
+          <td class="paytiny" style="white-space:nowrap">
+            <span data-state="${u.id}">${
+              custom && perms.length === 0 ? '<b style="color:var(--red)">no access</b>' : custom ? "custom" : "role default"
+            }</span>
+            <button class="btn btn-ghost btn-sm grant-default" data-uid="${u.id}" style="margin-left:6px">Employee set</button>
+          </td>
         </tr>`;
       })
       .join("");
@@ -3968,6 +3995,16 @@
     };
 
     $$(".perm", root).forEach((c) => c.addEventListener("change", () => savePerms(c.dataset.uid)));
+
+    // one click to give a new person the standard employee features
+    $$(".grant-default", root).forEach((b) =>
+      b.addEventListener("click", async () => {
+        $$(`.perm[data-uid="${b.dataset.uid}"]`).forEach((c) => {
+          c.checked = EMPLOYEE_DEFAULT.includes(c.dataset.feat);
+        });
+        await savePerms(b.dataset.uid);
+      })
+    );
 
     $$(".role-sel", root).forEach((s) =>
       s.addEventListener("change", async () => {
