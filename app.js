@@ -1036,16 +1036,12 @@
           <label class="full">Trip Purpose
             <input name="trip_purpose" required placeholder="e.g. Site visit to Pondok Indah course" />
           </label>
-          <label>Amount claimed <span class="hint">(optional)</span>
-            <input name="amount" type="number" step="0.01" min="0" placeholder="Total to reimburse" />
+          <label>Trip value <span class="hint" id="rate-hint">(auto: km × rate)</span>
+            <input name="trip_value" type="number" step="0.01" min="0" readonly
+                   style="background:#f4f7f5;font-weight:700" placeholder="0" />
           </label>
-          <label>Currency
-            <select name="currency">
-              <option value="IDR" selected>IDR</option>
-              <option value="USD">USD</option>
-              <option value="SGD">SGD</option>
-              <option value="EUR">EUR</option>
-            </select>
+          <label>Additional fees <span class="hint">(parking, toll, …)</span>
+            <input name="additional_fees" type="number" step="0.01" min="0" placeholder="0" />
           </label>
           <div class="full">
             <label>Which items are included in your reimbursement claim? <span class="hint">(select all that apply)</span></label>
@@ -1071,6 +1067,10 @@
             </label>
           </div>
         </div>
+        <div class="grand">
+          <span>Total claimed <span class="fx-hint" id="trip-breakdown"></span></span>
+          <span class="amount" id="trip-total">IDR 0</span>
+        </div>
         <div class="modal-actions">
           <button type="submit" class="btn btn-primary">Submit claim</button>
           <button type="button" class="btn btn-ghost" data-nav="#trips">Cancel</button>
@@ -1090,7 +1090,30 @@
     wireFile("map_screenshot", "map-label", "🗺️ Click to attach the Google Maps route screenshot");
     wireFile("receipt", "receipt-label", "📎 Click to attach the trip receipt (toll / parking / fuel)");
 
-    $("#trip-form").addEventListener("submit", submitTrip);
+    const form = $("#trip-form");
+    const recalcTrip = () => {
+      const rates = cfg.TRIP_RATE_PER_KM || { Motorcycle: 1500, Car: 3000 };
+      const vehicle = form.vehicle_option.value;
+      const rate = rates[vehicle];
+      const km = Number(form.total_km.value) || 0;
+      const tripValue = rate ? Math.round(km * rate) : 0;
+      form.trip_value.value = tripValue || "";
+      const fees = Number(form.additional_fees.value) || 0;
+
+      $("#rate-hint").textContent = rate
+        ? `(${km || 0} km × ${money(rate, "IDR")}/km)`
+        : "(choose a vehicle first)";
+      $("#trip-total").textContent = money(tripValue + fees, "IDR");
+      $("#trip-breakdown").textContent =
+        fees > 0 ? `${money(tripValue, "IDR")} trip + ${money(fees, "IDR")} fees` : "";
+    };
+    ["vehicle_option", "total_km", "additional_fees"].forEach((f) =>
+      form[f].addEventListener("input", recalcTrip)
+    );
+    form.vehicle_option.addEventListener("change", recalcTrip);
+    recalcTrip();
+
+    form.addEventListener("submit", submitTrip);
   }
 
   async function submitTrip(e) {
@@ -1107,6 +1130,17 @@
         msg.className = "msg error";
         return;
       }
+    }
+
+    // recompute from the policy rate rather than trusting the read-only field
+    const rates = cfg.TRIP_RATE_PER_KM || { Motorcycle: 1500, Car: 3000 };
+    const rate = rates[form.vehicle_option.value] || 0;
+    const tripValue = Math.round((Number(form.total_km.value) || 0) * rate);
+    const fees = Number(form.additional_fees.value) || 0;
+    if (tripValue + fees <= 0) {
+      msg.textContent = "Enter the kilometres travelled (or an additional fee) so the claim has a value.";
+      msg.className = "msg error";
+      return;
     }
 
     btn.disabled = true;
@@ -1135,8 +1169,10 @@
         vehicle_option: form.vehicle_option.value || null,
         trip_purpose: form.trip_purpose.value.trim(),
         total_km: form.total_km.value ? Number(form.total_km.value) : null,
-        amount: form.amount.value ? Number(form.amount.value) : null,
-        currency: form.currency.value,
+        trip_value: tripValue,
+        additional_fees: fees,
+        amount: tripValue + fees,
+        currency: "IDR",
         claim_items: items,
         claim_items_other: form.claim_items_other.value.trim() || null,
         map_screenshot_path: mapPath,
@@ -3073,9 +3109,18 @@
         ["Trip purpose", r.trip_purpose || "—"],
         ["Total km (round trip)", r.total_km != null ? r.total_km + " km" : "—"],
         ["Claim items", (r.claim_items || []).join(", ") + (r.claim_items_other ? " — " + r.claim_items_other : "") || "—"],
-        ["Amount claimed", r.amount != null ? money(r.amount, r.currency) : "—"],
-        ["Submitted", fmtDate(r.created_at)],
       ];
+      if (r.trip_value != null || r.additional_fees != null) {
+        const kmRate = r.total_km ? Math.round(Number(r.trip_value || 0) / Number(r.total_km)) : null;
+        rows.push(
+          ["Trip value", money(r.trip_value || 0, r.currency) + (kmRate ? ` (${r.total_km} km × ${money(kmRate, "IDR")}/km)` : "")],
+          ["Additional fees", money(r.additional_fees || 0, r.currency)]
+        );
+      }
+      rows.push(
+        ["Total claimed", r.amount != null ? money(r.amount, r.currency) : "—"],
+        ["Submitted", fmtDate(r.created_at)]
+      );
       files = [
         { label: "🗺️ View Google Map screenshot", bucket: "trip-files", path: r.map_screenshot_path },
         { label: "📎 View trip receipt", bucket: "trip-files", path: r.receipt_path },

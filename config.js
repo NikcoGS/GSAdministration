@@ -15,6 +15,13 @@ window.GS_CONFIG = {
   COMPANY_NAME: "Golf Solutions",
   APP_NAME: "GS Operational System",
 
+  // Trip reimbursement mileage rates, in IDR per kilometre (round trip).
+  // Change a number here and every new claim uses it — no code change needed.
+  TRIP_RATE_PER_KM: {
+    Motorcycle: 1500,
+    Car: 3000,
+  },
+
   // --------------------------------------------------------------------------
   // Google sync (optional) — needs the "gs-sync" edge function deployed, plus
   // the Apps Script web app (apps-script-gs-sync.gs) and its two Supabase
