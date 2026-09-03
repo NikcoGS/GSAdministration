@@ -101,6 +101,22 @@
   const fmtDateTime = (d) =>
     d ? new Date(d).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
 
+  // Turn database errors into something the person can act on.
+  // A row-level-security rejection means "you lack the feature", not a bug.
+  function friendlyError(err) {
+    const m = String(err?.message || err || "");
+    if (/row-level security|violates row-level/i.test(m)) {
+      return "You don't have access to this feature yet. Ask an administrator to enable it for you in Users & Access.";
+    }
+    if (/column .* does not exist/i.test(m)) {
+      return "This feature needs a database update that hasn't been applied yet. " + m;
+    }
+    if (/JWT|not authenticated|invalid token/i.test(m)) {
+      return "Your session expired — please log out and back in.";
+    }
+    return m || "Something went wrong.";
+  }
+
   let toastTimer;
   function toast(msg, kind = "ok") {
     const t = $("#toast");
@@ -561,7 +577,7 @@
       msg.className = "msg ok";
       toast("✨ Invoice read");
     } catch (err) {
-      msg.textContent = err.message || "Could not read the invoice.";
+      msg.textContent = friendlyError(err);
       msg.className = "msg error";
     } finally {
       btn.disabled = false;
@@ -618,7 +634,7 @@
       toast("Payment request submitted ✔");
       location.hash = "#dashboard";
     } catch (err) {
-      msg.textContent = err.message || "Something went wrong.";
+      msg.textContent = friendlyError(err);
       msg.className = "msg error";
     } finally {
       btn.disabled = false;
@@ -878,7 +894,7 @@
       }
       toast(`✨ ${items.length} items read`);
     } catch (err) {
-      msg.textContent = err.message || "Could not read the invoice.";
+      msg.textContent = friendlyError(err);
       msg.className = "msg error";
     } finally {
       btn.disabled = false;
@@ -971,7 +987,7 @@
       toast("Supplier payment request submitted ✔");
       location.hash = "#dashboard";
     } catch (err) {
-      msg.textContent = err.message || "Something went wrong.";
+      msg.textContent = friendlyError(err);
       msg.className = "msg error";
     } finally {
       btn.disabled = false;
@@ -1185,7 +1201,7 @@
       toast("Trip claim submitted ✔");
       location.hash = "#trips";
     } catch (err) {
-      msg.textContent = err.message || "Something went wrong.";
+      msg.textContent = friendlyError(err);
       msg.className = "msg error";
     } finally {
       btn.disabled = false;
@@ -1372,7 +1388,7 @@
     } catch (err) {
       // best-effort rollback of the header if lines failed
       if (claimId) await sb.from("petty_cash_claims").delete().eq("id", claimId);
-      msg.textContent = err.message || "Something went wrong.";
+      msg.textContent = friendlyError(err);
       msg.className = "msg error";
     } finally {
       btn.disabled = false;
@@ -1385,7 +1401,7 @@
   async function loadUsers() {
     if (state.users) return state.users;
     const { data, error } = await sb.from("user_directory").select("*").order("full_name");
-    if (error) { toast(error.message, "error"); return []; }
+    if (error) { toast(friendlyError(error), "error"); return []; }
     state.users = data || [];
     return state.users;
   }
@@ -1602,7 +1618,7 @@
         const { error: dErr } = await sb.from("receiving_dismissals").insert({
           payment_request_id: p.id, dismissed_by: state.user.id,
         });
-        if (dErr) { toast(dErr.message, "error"); b.disabled = false; return; }
+        if (dErr) { toast(friendlyError(dErr), "error"); b.disabled = false; return; }
         toast("Removed from the receiving list");
         renderReceiving();
       })
@@ -1635,7 +1651,7 @@
           rb.disabled = true;
           const { error: rErr } = await sb
             .from("receiving_dismissals").delete().eq("payment_request_id", rb.dataset.id);
-          if (rErr) { toast(rErr.message, "error"); rb.disabled = false; return; }
+          if (rErr) { toast(friendlyError(rErr), "error"); rb.disabled = false; return; }
           closeModal();
           toast("Restored to the receiving list");
           renderReceiving();
@@ -1789,7 +1805,7 @@
       msg.className = "msg ok";
       toast(`✨ ${items.length} items read from PO`);
     } catch (err) {
-      msg.textContent = err.message || "Could not read the PO.";
+      msg.textContent = friendlyError(err);
       msg.className = "msg error";
     } finally {
       btn.disabled = false;
@@ -1855,7 +1871,7 @@
       location.hash = "#receiving";
     } catch (err) {
       if (orderId) await sb.from("receiving_orders").delete().eq("id", orderId);
-      msg.textContent = err.message || "Something went wrong.";
+      msg.textContent = friendlyError(err);
       msg.className = "msg error";
     } finally {
       btn.disabled = false;
@@ -1931,7 +1947,7 @@
         row.querySelector("input").addEventListener("change", async (ev) => {
           const val = ev.target.checked;
           const { error: uErr } = await sb.from("receiving_lines").update({ checked: val }).eq("id", l.id);
-          if (uErr) { ev.target.checked = !val; toast(uErr.message, "error"); return; }
+          if (uErr) { ev.target.checked = !val; toast(friendlyError(uErr), "error"); return; }
           l.checked = val;
           row.classList.toggle("done", val);
           updateProgress();
@@ -1969,7 +1985,7 @@
       del.addEventListener("click", async () => {
         if (!confirm("Delete this receiving order?")) return;
         const { error: dErr } = await sb.from("receiving_orders").delete().eq("id", r.id);
-        if (dErr) { toast(dErr.message, "error"); return; }
+        if (dErr) { toast(friendlyError(dErr), "error"); return; }
         closeModal(); toast("Deleted"); renderReceiving();
       });
       actions.append(del);
@@ -2179,7 +2195,7 @@
       location.hash = "#movements";
     } catch (err) {
       if (movId) await sb.from("store_movements").delete().eq("id", movId);
-      msg.textContent = err.message || "Something went wrong.";
+      msg.textContent = friendlyError(err);
       msg.className = "msg error";
     } finally {
       btn.disabled = false;
@@ -2260,7 +2276,7 @@
       del.addEventListener("click", async () => {
         if (!confirm("Delete this movement?")) return;
         const { error: dErr } = await sb.from("store_movements").delete().eq("id", m.id);
-        if (dErr) { toast(dErr.message, "error"); return; }
+        if (dErr) { toast(friendlyError(dErr), "error"); return; }
         closeModal(); toast("Deleted"); renderMovements();
       });
       actions.append(del);
@@ -2959,7 +2975,7 @@
           reviewed_at: new Date().toISOString(),
         })
         .in("id", ids);
-      if (error) { toast(error.message, "error"); return; }
+      if (error) { toast(friendlyError(error), "error"); return; }
       toast(`${ids.length} item(s) ${status} ${status === "approved" ? "✔" : ""}`, status === "approved" ? "ok" : "error");
       state.purchAll = null;
       if (mod === "payment") syncToGoogleSheet({ silent: true });
@@ -3391,7 +3407,7 @@
       del.addEventListener("click", async () => {
         if (!confirm("Delete this pending item?")) return;
         const { error } = await sb.from(TYPES[type].table).delete().eq("id", r.id);
-        if (error) { toast(error.message, "error"); return; }
+        if (error) { toast(friendlyError(error), "error"); return; }
         closeModal();
         toast("Deleted");
         route();
@@ -3702,7 +3718,7 @@
       toast("Payment saved — marked paid 💸");
       route();
     } catch (err) {
-      msg.textContent = err.message || "Something went wrong.";
+      msg.textContent = friendlyError(err);
       msg.className = "msg error";
       saveBtn.disabled = false;
     }
