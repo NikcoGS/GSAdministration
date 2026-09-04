@@ -644,7 +644,7 @@
   // ==========================================================================
   //  SUPPLIER PAYMENT — invoice/PO drop, priced item lines, FX -> IDR estimate
   // ==========================================================================
-  const SP_CURRENCIES = ["IDR", "USD", "SGD", "EUR", "JPY", "CNY", "MYR"];
+  const SP_CURRENCIES = ["IDR", "USD", "SGD", "MYR", "THB", "EUR", "JPY", "CNY", "AUD", "GBP", "KRW", "HKD", "VND", "PHP"];
   const fxCache = {};
   async function fetchIdrRate(cur) {
     if (cur === "IDR") return 1;
@@ -939,6 +939,13 @@
     const cur = form.currency.value;
 
     btn.disabled = true; msg.className = "msg"; msg.textContent = "Submitting…";
+
+    // last-chance rate fetch so a foreign request never saves without an IDR estimate
+    if (cur !== "IDR" && !form._idrEstimate) {
+      const rate = await fetchIdrRate(cur);
+      if (rate) { form._fxRate = rate; form._idrEstimate = Math.round(total * rate); }
+    }
+
     try {
       let invoicePath = null;
       if (file) {
@@ -3380,13 +3387,25 @@
       actions.append(pay);
     }
 
-    // Admin: reprice a PAID foreign-currency payment into actual IDR
-    if (isAdmin && type === "payment" && r.paid_at && (r.currency || "IDR") !== "IDR" && !opts.hidePrices) {
-      const rp = el(`<button class="btn btn-ghost">💱 ${r.idr_actual ? "Fix IDR repricing" : "Reprice to IDR"}</button>`);
+    // Admin: set / correct the IDR value of a foreign-currency request.
+    // Paid  -> the actual rupiah that left the bank.
+    // Unpaid-> an estimate, pre-filled from today's live rate.
+    if (isAdmin && type === "payment" && (r.currency || "IDR") !== "IDR" && !opts.hidePrices) {
+      const label = r.paid_at
+        ? r.idr_actual ? "Fix IDR repricing" : "Reprice to IDR"
+        : r.idr_estimate ? "Update IDR estimate" : "Set IDR estimate";
+      const rp = el(`<button class="btn btn-ghost">💱 ${label}</button>`);
       rp.addEventListener("click", async () => {
+        let suggestion = r.paid_at ? r.idr_actual || "" : r.idr_estimate || "";
+        if (!suggestion) {
+          const live = await fetchIdrRate(r.currency);
+          if (live) suggestion = Math.round(Number(r.amount) * live);
+        }
         const val = prompt(
-          `Actual IDR paid for ${money(r.amount, r.currency)} (excluding bank fees):`,
-          r.idr_actual || ""
+          r.paid_at
+            ? `Actual IDR paid for ${money(r.amount, r.currency)} (excluding bank fees):`
+            : `Estimated IDR value of ${money(r.amount, r.currency)}:`,
+          suggestion
         );
         if (val == null) return;
         const idr = Number(String(val).replace(/[^\d.]/g, ""));
@@ -3616,18 +3635,19 @@
   }
 
   // apply the realized IDR value (excl. fees) to one foreign-currency request
+  // Paid items record what actually left the bank; unpaid ones only an estimate.
   async function repriceToIdr(r, idrPaid) {
     const rate = idrPaid / Number(r.amount);
-    const patch = {
-      idr_actual: Math.round(idrPaid * 100) / 100,
-      fx_rate_actual: Math.round(rate * 1e6) / 1e6,
-    };
+    const patch = r.paid_at
+      ? { idr_actual: Math.round(idrPaid * 100) / 100, fx_rate_actual: Math.round(rate * 1e6) / 1e6 }
+      : { idr_estimate: Math.round(idrPaid * 100) / 100, fx_rate: Math.round(rate * 1e6) / 1e6 };
     if (Array.isArray(r.items) && r.items.length) {
       patch.items = r.items.map((li) => ({ ...li, idr_unit_price: Math.round(Number(li.unit_price) * rate) }));
     }
     if (Array.isArray(r.charges) && r.charges.length) {
       patch.charges = r.charges.map((c) => ({ ...c, idr_amount: Math.round(Number(c.amount) * rate) }));
     }
+    if (!r.amount || Number(r.amount) <= 0) { toast("This request has no amount to convert", "error"); return false; }
     const { error } = await sb.from("payment_requests").update(patch).eq("id", r.id);
     if (error) { toast("Repricing failed: " + error.message, "error"); return false; }
     state.purchAll = null;
