@@ -249,6 +249,20 @@ details.batch-sec .card { margin: 8px 0 14px; }
 @media (max-width: 720px) { .ch-head { display: none; } .ch-row { grid-template-columns: 1fr 100px 30px; } }
 @media (max-width: 720px) { .ln4-head { display: none; } .ln4-row { grid-template-columns: 1fr 56px 90px 80px 30px; } }
 
+/* per-invoice allocation in the payment modal */
+.alloc-box { border: 1px dashed var(--line); border-radius: 10px; padding: 12px 14px; margin-top: 14px; background: #fbfdfc; }
+.alloc-head, .alloc-row { display: grid; grid-template-columns: 1fr 130px 130px; gap: 10px; align-items: center; }
+.alloc-head { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; padding-bottom: 6px; }
+.alloc-head span:not(:first-child), .alloc-row .amount { text-align: right; }
+.alloc-row { padding: 7px 0; border-top: 1px solid var(--line); font-size: 13.5px; }
+.alloc-row input { text-align: right; font-weight: 600; }
+@media (max-width: 720px) {
+  .alloc-head { display: none; }
+  .alloc-row { grid-template-columns: 1fr 100px; }
+  .alloc-row .amount { grid-column: 2; }
+  .alloc-row input { grid-column: 2; }
+}
+
 /* payment proof verification results */
 .verify-box {
   background: #fbfdfc;

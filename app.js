@@ -3126,6 +3126,16 @@
   const isEstimated = (type, r) =>
     (TYPES[type].currency(r) || "IDR") !== "IDR" && r.idr_actual == null;
 
+  // How much of a request is still owed. Partial payments live in
+  // payment_allocations; paid_amount is the running total kept by the database.
+  const paidSoFar = (r) => Number(r.paid_amount || 0);
+  function remainingOf(type, r) {
+    const total = Number(TYPES[type].amount(r) || 0);
+    const left = Math.round((total - paidSoFar(r)) * 100) / 100;
+    return left > 0 ? left : 0;
+  }
+  const isPartiallyPaid = (r) => paidSoFar(r) > 0 && !r.paid_at;
+
   async function openDetail(r, isAdmin, nameMap = {}, type = "payment", opts = {}) {
     const requester = nameMap[r.requester_id] || (r.requester_id === state.user.id ? "You" : "—");
     let rows, files;
@@ -3352,6 +3362,45 @@
       );
     }
 
+    // Payment history: every transfer applied to this invoice
+    if (type === "payment" && !opts.hidePrices && (paidSoFar(r) > 0 || r.paid_at)) {
+      const { data: allocs } = await sb
+        .from("payment_allocations")
+        .select("amount,created_at,batch_id")
+        .eq("payment_request_id", r.id)
+        .order("created_at");
+      if (allocs && allocs.length) {
+        const bIds = [...new Set(allocs.map((a) => a.batch_id).filter(Boolean))];
+        const bMap = {};
+        if (bIds.length) {
+          const { data: bts } = await sb
+            .from("disbursement_batches").select("id,paid_date,bank_ref,note").in("id", bIds);
+          (bts || []).forEach((b) => (bMap[b.id] = b));
+        }
+        const paid = paidSoFar(r);
+        const left = remainingOf(type, r);
+        const rowsHtml = allocs
+          .map((a, i) => {
+            const b = bMap[a.batch_id] || {};
+            return `<tr><td>${i + 1}</td><td>${esc(fmtDate(b.paid_date || a.created_at))}</td>
+              <td>${esc(b.bank_ref || "—")}</td>
+              <td class="amount">${money(a.amount, r.currency)}</td></tr>`;
+          })
+          .join("");
+        card.querySelector("#lines-slot").insertAdjacentHTML(
+          "beforebegin",
+          `<div style="margin-top:14px">
+             <div class="check-progress">Payment history — ${money(paid, r.currency)} paid${
+               left > 0 ? `, <b style="color:var(--amber)">${money(left, r.currency)} outstanding</b>` : " (settled in full)"
+             }</div>
+             <div class="table-wrap"><table>
+               <thead><tr><th>#</th><th>Date</th><th>Reference</th><th>Amount</th></tr></thead>
+               <tbody>${rowsHtml}</tbody></table></div>
+           </div>`
+        );
+      }
+    }
+
     // Admin: show the payment entry (ref, date, proof) for paid items
     if (isAdmin && r.batch_id) {
       const { data: bt } = await sb.from("disbursement_batches").select("*").eq("id", r.batch_id).maybeSingle();
@@ -3481,10 +3530,11 @@
   //  items: [{ type, r }]
   // ==========================================================================
   function openPaymentModal(items) {
+    // pay what is still outstanding, not the original invoice value
     const totals = {};
     items.forEach((it) => {
       const cur = TYPES[it.type].currency(it.r) || "IDR";
-      totals[cur] = (totals[cur] || 0) + Number(TYPES[it.type].amount(it.r) || 0);
+      totals[cur] = (totals[cur] || 0) + remainingOf(it.type, it.r);
     });
     const curs = Object.keys(totals);
     const totalStr = Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ");
@@ -3500,6 +3550,25 @@
             <span class="hint">${items.length} item${items.length === 1 ? "" : "s"} · expected total <b>${totalStr}</b></span>
           </div>
           <button class="btn btn-ghost btn-sm" data-close>✕</button>
+        </div>
+        <div class="alloc-box">
+          <div class="alloc-head"><span>Invoice</span><span>Outstanding</span><span>Paying now</span></div>
+          ${items
+            .map((it, i) => {
+              const rem = remainingOf(it.type, it.r);
+              const cur = TYPES[it.type].currency(it.r) || "IDR";
+              const partial = isPartiallyPaid(it.r);
+              return `<div class="alloc-row">
+                  <span>
+                    ${esc(TYPES[it.type].title(it.r))}
+                    ${partial ? `<div class="paytiny">already paid ${money(paidSoFar(it.r), cur)} of ${money(TYPES[it.type].amount(it.r), cur)}</div>` : ""}
+                  </span>
+                  <span class="amount">${money(rem, cur)}</span>
+                  <input type="number" class="alloc-amt" data-i="${i}" step="0.01" min="0" max="${rem}" value="${rem}" />
+                </div>`;
+            })
+            .join("")}
+          <p class="hint" style="margin:6px 2px 0">Pay less than the outstanding amount to record a deposit or instalment — the invoice stays open for the balance.</p>
         </div>
         <div class="form-grid" style="margin-top:16px">
           <label>Payment date
@@ -3553,6 +3622,15 @@
         : "📎 Click to attach the transfer receipt";
       verifyBtn.classList.toggle("hidden", !f);
     });
+    // keep "amount transferred" in step with what is being applied per invoice
+    const amountInput = card.querySelector("input[name=amount]");
+    const syncAllocTotal = () => {
+      let sum = 0;
+      $$(".alloc-amt", card).forEach((i) => (sum += Number(i.value) || 0));
+      amountInput.value = Math.round(sum * 100) / 100;
+    };
+    $$(".alloc-amt", card).forEach((i) => i.addEventListener("input", syncAllocTotal));
+
     verifyBtn.addEventListener("click", () => verifyPaymentProof(card, fileInput.files[0], items));
     card.querySelector("#pay-save").addEventListener("click", () => savePayment(card, items, fileInput.files[0]));
   }
@@ -3704,12 +3782,42 @@
         .single();
       if (bErr) throw bErr;
 
+      // Record how much of this transfer went to each invoice. The database
+      // trigger adds it up and marks an invoice paid only when fully covered.
+      const allocInputs = $$(".alloc-amt", card);
+      const allocations = items
+        .map((it, i) => ({
+          it,
+          amount: allocInputs[i] ? Number(allocInputs[i].value) || 0 : remainingOf(it.type, it.r),
+        }))
+        .filter((a) => a.amount > 0);
+      if (!allocations.length) throw new Error("Enter how much is being paid against at least one invoice.");
+
+      const payments = allocations.filter((a) => a.it.type === "payment");
+      if (payments.length) {
+        const { error: aErr } = await sb.from("payment_allocations").insert(
+          payments.map((a) => ({ batch_id: batch.id, payment_request_id: a.it.r.id, amount: a.amount }))
+        );
+        if (aErr) throw aErr;
+      }
+
+      // trip and petty claims are settled in full — they have no balance concept
       const stamp = { paid_at: new Date(paidDate + "T12:00:00").toISOString(), paid_by: state.user.id, batch_id: batch.id };
       const byType = {};
-      items.forEach((it) => (byType[it.type] = byType[it.type] || []).push(it.r.id));
+      allocations
+        .filter((a) => a.it.type !== "payment")
+        .forEach((a) => (byType[a.it.type] = byType[a.it.type] || []).push(a.it.r.id));
       for (const [type, ids] of Object.entries(byType)) {
         const { error: uErr } = await sb.from(TYPES[type].table).update(stamp).in("id", ids);
         if (uErr) throw uErr;
+      }
+      // keep paid_by / batch_id on the invoices for reporting
+      if (payments.length) {
+        const { error: mErr } = await sb
+          .from("payment_requests")
+          .update({ paid_by: state.user.id, batch_id: batch.id })
+          .in("id", payments.map((a) => a.it.r.id));
+        if (mErr) throw mErr;
       }
 
       // reprice foreign-currency requests into IDR using the actual paid value
@@ -3832,7 +3940,7 @@
       let gIdr = 0, gForeign = false, gUnknown = false;
       groupItems.forEach((it) => {
         const cur = TYPES[it.type].currency(it.r) || "IDR";
-        const amt = Number(TYPES[it.type].amount(it.r) || 0);
+        const amt = remainingOf(it.type, it.r);
         totals[cur] = (totals[cur] || 0) + amt;
         if (cur !== "IDR") gForeign = true;
         const v = idrValue(it.type, it.r);
@@ -3877,7 +3985,7 @@
           let dIdr = 0, dForeign = false, dUnknown = false;
           d.items.forEach((it) => {
             const c = TYPES[it.type].currency(it.r) || "IDR";
-            dTotals[c] = (dTotals[c] || 0) + Number(TYPES[it.type].amount(it.r) || 0);
+            dTotals[c] = (dTotals[c] || 0) + remainingOf(it.type, it.r);
             if (c !== "IDR") dForeign = true;
             const v = idrValue(it.type, it.r);
             if (v == null) dUnknown = true; else dIdr += v;
@@ -3894,13 +4002,18 @@
           const rowsHtml = d.items
             .map((it) => {
               const { type, r } = it;
-              const amt = TYPES[type].amount(r);
               const cur = TYPES[type].currency(r) || "IDR";
+              const partial = isPartiallyPaid(r);
+              const amt = partial ? remainingOf(type, r) : TYPES[type].amount(r);
               const idrEq = idrValue(type, r);
               return `
                 <tr data-type="${type}" data-id="${r.id}">
                   <td><span class="type-tag ${type}">${TYPES[type].label}</span></td>
-                  <td>${esc(TYPES[type].title(r))}</td>
+                  <td>${esc(TYPES[type].title(r))}${
+                    partial
+                      ? `<div class="paytiny">part-paid ${money(paidSoFar(r), cur)} of ${money(TYPES[type].amount(r), cur)}</div>`
+                      : ""
+                  }</td>
                   <td>${fmtDate(r.reviewed_at)}</td>
                   <td class="amount">${amt != null ? money(amt, cur) : "—"}${
                     cur !== "IDR"
@@ -4029,7 +4142,7 @@
         const totals = {};
         d.items.forEach((it) => {
           const c = TYPES[it.type].currency(it.r) || "IDR";
-          const a = Number(TYPES[it.type].amount(it.r) || 0);
+          const a = remainingOf(it.type, it.r);
           totals[c] = (totals[c] || 0) + a;
           grand[c] = (grand[c] || 0) + a;
         });
@@ -4135,7 +4248,7 @@
     const totals = {};
     groupItems.forEach((it) => {
       const cur = TYPES[it.type].currency(it.r) || "IDR";
-      totals[cur] = (totals[cur] || 0) + Number(TYPES[it.type].amount(it.r) || 0);
+      totals[cur] = (totals[cur] || 0) + remainingOf(it.type, it.r);
     });
     const totalStr = Object.entries(totals).map(([c, v]) => money(v, c)).join("  +  ");
 
