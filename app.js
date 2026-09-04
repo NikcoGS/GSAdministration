@@ -3803,9 +3803,16 @@
 
     const destList = []; // flat list of destination sub-groups, indexed by the Pay buttons
     const grandCount = items.length;
-    let html = `<p class="sub" style="margin:-6px 0 18px">${grandCount} approved item${
-      grandCount === 1 ? "" : "s"
-    } across ${Object.keys(groups).length} employee${Object.keys(groups).length === 1 ? "" : "s"} awaiting payment.</p>`;
+    let html = `
+      <div class="toolbar" style="margin-bottom:18px">
+        <span class="sub" style="margin:0">${grandCount} approved item${
+          grandCount === 1 ? "" : "s"
+        } across ${Object.keys(groups).length} employee${
+          Object.keys(groups).length === 1 ? "" : "s"
+        } awaiting payment.</span>
+        <span class="spacer"></span>
+        <button class="btn btn-ghost btn-sm" id="print-all">🖨️ Print all pending payments</button>
+      </div>`;
 
     for (const uid of Object.keys(groups)) {
       const p = profMap[uid] || {};
@@ -3863,7 +3870,7 @@
       const destHtml = Object.keys(dests)
         .map((dk) => {
           const d = dests[dk];
-          destList.push({ uid, items: d.items });
+          destList.push({ uid, items: d.items, label: d.label, bank: d.bank, acct: d.acct, holder: d.holder });
           const di = destList.length - 1;
 
           const dTotals = {};
@@ -3970,6 +3977,9 @@
         if (it) openPaymentModal([it]);
       })
     );
+    // one sheet for the whole payment run
+    $("#print-all")?.addEventListener("click", () => printAllDisbursements(destList, profMap));
+
     // print buttons (one printable payout sheet per employee)
     $$(".print-group", root).forEach((b) =>
       b.addEventListener("click", (e) => {
@@ -3993,6 +4003,127 @@
         if (d && d.items.length) openPaymentModal(d.items);
       })
     );
+  }
+
+  // One sheet covering every pending payment, grouped by employee then by the
+  // account the money goes to — one section per actual bank transfer.
+  function printAllDisbursements(destList, profMap) {
+    if (!destList.length) { toast("Nothing pending to print", "error"); return; }
+    const company = cfg.COMPANY_NAME || "Company";
+    const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
+    const preparedBy = state.profile.full_name || state.profile.email || "";
+
+    const grand = {};      // per-currency grand total
+    let sections = "";
+    let n = 0;
+
+    // keep the on-screen order: employee, then their destinations
+    const byUid = {};
+    destList.forEach((d) => (byUid[d.uid] = byUid[d.uid] || []).push(d));
+
+    Object.keys(byUid).forEach((uid) => {
+      const p = profMap[uid] || {};
+      const who = p.full_name || p.email || "Unknown user";
+      byUid[uid].forEach((d) => {
+        n += 1;
+        const totals = {};
+        d.items.forEach((it) => {
+          const c = TYPES[it.type].currency(it.r) || "IDR";
+          const a = Number(TYPES[it.type].amount(it.r) || 0);
+          totals[c] = (totals[c] || 0) + a;
+          grand[c] = (grand[c] || 0) + a;
+        });
+        const totalStr = Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ");
+        const rows = d.items
+          .map(
+            (it, i) => `<tr>
+              <td>${i + 1}</td>
+              <td>${esc(TYPES[it.type].label)}</td>
+              <td>${esc(TYPES[it.type].title(it.r))}</td>
+              <td>${esc(who)}</td>
+              <td class="r">${
+                TYPES[it.type].amount(it.r) != null
+                  ? esc(money(TYPES[it.type].amount(it.r), TYPES[it.type].currency(it.r)))
+                  : "—"
+              }</td>
+            </tr>`
+          )
+          .join("");
+
+        sections += `
+          <div class="pay">
+            <div class="payhead">
+              <div>
+                <div class="n">${n}. ${esc(d.label || who)}</div>
+                <div class="acct">${
+                  d.acct
+                    ? `${esc(d.bank || "Bank")} — <b>${esc(d.acct)}</b>${d.holder ? " (" + esc(d.holder) + ")" : ""}`
+                    : '<span style="color:#b42318">no account on file</span>'
+                }</div>
+                <div class="acct">for ${esc(who)}</div>
+              </div>
+              <div class="amt">${esc(totalStr)}</div>
+            </div>
+            <table>
+              <thead><tr><th>#</th><th>Type</th><th>Description</th><th>Requested by</th><th class="r">Amount</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>`;
+      });
+    });
+
+    const grandStr = Object.entries(grand).map(([c, v]) => money(v, c)).join("  +  ");
+
+    const doc = `<!doctype html><html><head><meta charset="utf-8"><title>Pending payments — ${esc(today)}</title>
+      <style>
+        :root { color-scheme: light; }
+        * { box-sizing: border-box; }
+        html, body { background:#fff; }
+        body { font-family:-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color:#14211b; margin:32px; }
+        .head { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:3px solid #157347; padding-bottom:14px; margin-bottom:8px; }
+        .company { font-size:22px; font-weight:800; color:#0f5132; }
+        .doc-title { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:#5f6f68; margin-top:2px; }
+        .meta { text-align:right; font-size:12px; color:#5f6f68; }
+        .summary { font-size:13px; color:#35443c; margin:12px 0 18px; }
+        .pay { border:1px solid #e2e8e4; border-radius:8px; margin-bottom:14px; page-break-inside:avoid; }
+        .payhead { display:flex; justify-content:space-between; align-items:center; gap:16px; background:#f4f7f5; padding:10px 12px; border-bottom:1px solid #e2e8e4; }
+        .payhead .n { font-weight:700; font-size:14px; }
+        .payhead .acct { font-size:12px; color:#5f6f68; margin-top:2px; }
+        .payhead .amt { font-weight:800; color:#0f5132; white-space:nowrap; font-variant-numeric:tabular-nums; }
+        table { width:100%; border-collapse:collapse; font-size:12.5px; }
+        th, td { text-align:left; padding:7px 10px; border-bottom:1px solid #eef2ef; }
+        th { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:#5f6f68; }
+        td.r, th.r { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+        tbody tr:last-child td { border-bottom:0; }
+        .grand { display:flex; justify-content:space-between; align-items:baseline; border-top:3px solid #157347; margin-top:18px; padding-top:12px; font-size:16px; }
+        .grand .v { font-size:20px; font-weight:800; color:#0f5132; font-variant-numeric:tabular-nums; }
+        .note { margin-top:18px; font-size:12.5px; color:#35443c; }
+        .sign { display:flex; gap:60px; margin-top:44px; font-size:12px; color:#5f6f68; }
+        .sign .box { flex:1; }
+        .sign .line { border-top:1px solid #9aa8a1; margin-top:44px; padding-top:6px; }
+        .toolbar { margin-bottom:18px; }
+        .btn { font:inherit; font-weight:600; background:#157347; color:#fff; border:0; border-radius:8px; padding:9px 16px; cursor:pointer; }
+        @media print { .toolbar { display:none; } body { margin:0; } }
+      </style></head><body>
+      <div class="toolbar"><button class="btn" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
+      <div class="head">
+        <div><div class="company">${esc(company)}</div><div class="doc-title">Pending Payments — Disbursement Instruction</div></div>
+        <div class="meta">Date: ${esc(today)}<br>${n} transfer${n === 1 ? "" : "s"}</div>
+      </div>
+      <div class="summary">Each numbered block below is <b>one bank transfer</b> to the account shown. Please process them all and confirm once completed.</div>
+      ${sections}
+      <div class="grand"><span>Grand total across ${n} transfer${n === 1 ? "" : "s"}</span><span class="v">${esc(grandStr)}</span></div>
+      <div class="note">Foreign-currency amounts are shown in the invoice currency — transfer that amount, not a rupiah conversion.</div>
+      <div class="sign">
+        <div class="box"><div class="line">Prepared by${preparedBy ? " — " + esc(preparedBy) : ""}</div></div>
+        <div class="box"><div class="line">Transferred by</div></div>
+      </div>
+      <script>window.addEventListener('load',function(){setTimeout(function(){window.print();},250);});<\/script>
+      </body></html>`;
+
+    const w = window.open("", "_blank");
+    if (!w) { toast("Allow pop-ups for this site to print", "error"); return; }
+    w.document.open(); w.document.write(doc); w.document.close();
   }
 
   // Build a printable "Payment Disbursement Instruction" for one employee and
