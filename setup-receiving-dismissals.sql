@@ -34,3 +34,6 @@ create policy "rd_delete" on public.receiving_dismissals
 -- ============================================================================
 -- DONE. Dismissing is reversible — the app can restore a hidden purchase.
 -- ============================================================================
+
+-- Tell the API layer to pick up the new table immediately
+notify pgrst, 'reload schema';

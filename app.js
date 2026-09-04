@@ -108,8 +108,8 @@
     if (/row-level security|violates row-level/i.test(m)) {
       return "You don't have access to this feature yet. Ask an administrator to enable it for you in Users & Access.";
     }
-    if (/column .* does not exist/i.test(m)) {
-      return "This feature needs a database update that hasn't been applied yet. " + m;
+    if (/column .* does not exist|could not find the table|schema cache|relation .* does not exist/i.test(m)) {
+      return "This feature needs a database update that hasn't been run yet in Supabase. " + m;
     }
     if (/JWT|not authenticated|invalid token/i.test(m)) {
       return "Your session expired — please log out and back in.";
@@ -1518,8 +1518,13 @@
       .eq("status", "approved")
       .order("reviewed_at", { ascending: false });
     const linked = new Set((data || []).map((o) => o.payment_request_id).filter(Boolean));
-    // purchases marked as "no goods to receive" (service invoices etc.)
-    const { data: dismissals } = await sb.from("receiving_dismissals").select("payment_request_id");
+    // Purchases marked as "no goods to receive" (service invoices etc.).
+    // Tolerate the table not existing yet so a missing migration can't take
+    // down the whole Receiving page.
+    const { data: dismissals, error: dErr } = await sb
+      .from("receiving_dismissals")
+      .select("payment_request_id");
+    const dismissAvailable = !dErr;
     const dismissed = new Set((dismissals || []).map((d) => d.payment_request_id));
     const notLinked = (purchases || []).filter((p) => !linked.has(p.id));
     const toReceive = notLinked.filter((p) => !dismissed.has(p.id));
@@ -1549,7 +1554,9 @@
                 <td>${fmtDate(p.reviewed_at)}</td>
                 <td style="white-space:nowrap">
                   <button class="btn btn-primary btn-sm start-recv" data-id="${p.id}">📥 Start receiving</button>
-                  <button class="btn btn-ghost btn-sm dismiss-recv" data-id="${p.id}" title="No goods to receive — remove from this list">✕</button>
+                  ${dismissAvailable
+                    ? `<button class="btn btn-ghost btn-sm dismiss-recv" data-id="${p.id}" title="No goods to receive — remove from this list">✕</button>`
+                    : ""}
                 </td>
               </tr>`
             )
