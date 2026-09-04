@@ -4102,11 +4102,12 @@
       .map((u) => {
         const perms = permsOf(u);
         const custom = Array.isArray(u.permissions);
+        const isSelf = u.id === state.user.id;
         const cells = FEATURES.map(
           ([key]) =>
             `<td style="text-align:center"><input type="checkbox" class="perm" data-uid="${u.id}" data-feat="${key}" ${
               perms.includes(key) ? "checked" : ""
-            } style="width:18px;height:18px;accent-color:var(--green-600)" /></td>`
+            } ${isSelf ? "disabled title='You cannot change your own access'" : ""} style="width:18px;height:18px;accent-color:var(--green-600)" /></td>`
         ).join("");
         return `<tr data-uid="${u.id}">
           <td>
@@ -4126,7 +4127,12 @@
             <span data-state="${u.id}">${
               custom && perms.length === 0 ? '<b style="color:var(--red)">no access</b>' : custom ? "custom" : "role default"
             }</span>
-            <button class="btn btn-ghost btn-sm grant-default" data-uid="${u.id}" style="margin-left:6px">Employee set</button>
+            ${
+              isSelf
+                ? ""
+                : `<button class="btn btn-ghost btn-sm grant-default" data-uid="${u.id}" style="margin-left:6px">Employee set</button>
+                   ${custom ? `<button class="btn btn-ghost btn-sm reset-default" data-uid="${u.id}">Role default</button>` : ""}`
+            }
           </td>
         </tr>`;
       })
@@ -4163,6 +4169,16 @@
     };
 
     $$(".perm", root).forEach((c) => c.addEventListener("change", () => savePerms(c.dataset.uid)));
+
+    // back to "everything their role allows"
+    $$(".reset-default", root).forEach((b) =>
+      b.addEventListener("click", async () => {
+        const { error: e } = await sb.from("profiles").update({ permissions: null }).eq("id", b.dataset.uid);
+        if (e) { msg.textContent = friendlyError(e); msg.className = "msg error"; return; }
+        toast("Reset to role default ✔");
+        renderUsers();
+      })
+    );
 
     // one click to give a new person the standard employee features
     $$(".grant-default", root).forEach((b) =>
@@ -4250,9 +4266,42 @@
     return `<div class="card panel"><p class="msg error">⚠️ ${esc(text)}</p></div>`;
   }
 
+  // ==========================================================================
+  //  Live access: pick up permission changes without the user reloading
+  // ==========================================================================
+  let accessSignature = null;
+  async function refreshAccess() {
+    if (!state.user) return;
+    const { data, error } = await sb
+      .from("profiles")
+      .select("id,full_name,email,role,permissions,bank_name,bank_account_number,bank_account_name")
+      .eq("id", state.user.id)
+      .maybeSingle();
+    if (error || !data) return;
+
+    const sig = data.role + "|" + (Array.isArray(data.permissions) ? data.permissions.slice().sort().join(",") : "*");
+    if (accessSignature === null) { accessSignature = sig; state.profile = data; return; }
+    if (sig === accessSignature) return;
+
+    // access actually changed — rebuild the menus around them
+    const before = permsOf(state.profile).length;
+    accessSignature = sig;
+    state.profile = data;
+    const after = permsOf(state.profile).length;
+    showApp();
+    toast(after > before ? "Your access was updated ✔" : "Your access was changed by an administrator");
+  }
+
+  function watchAccess() {
+    setInterval(refreshAccess, 60000);              // steady background check
+    window.addEventListener("focus", refreshAccess); // and the moment they return to the tab
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshAccess(); });
+  }
+
   // ---- Boot ----------------------------------------------------------------
   (async function boot() {
     const { data } = await sb.auth.getSession();
-    handleSession(data.session);
+    await handleSession(data.session);
+    watchAccess();
   })();
 })();
