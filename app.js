@@ -2926,8 +2926,20 @@
           totals[cur] = (totals[cur] || 0) + Number(TYPES[mod].amount(r) || 0);
         });
         const totalStr = Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ");
+        // who the money went to — far more scannable than a bank reference,
+        // which is still on each row's detail if it's ever needed
+        const payees = [
+          ...new Set(
+            rows.map((r) =>
+              mod === "payment" ? r.payee_name || "—" : nameMap[r.requester_id] || "—"
+            )
+          ),
+        ];
+        const payeeStr =
+          payees.slice(0, 2).join(", ") + (payees.length > 2 ? ` +${payees.length - 2} more` : "");
+
         body +=
-          `<details class="batch-sec"><summary class="section-h paid">💸 Payment — ${fmtDateTime(timeOf(k))} · by ${esc(nameMap[payer] || "—")}${batchMap[k]?.bank_ref ? " · ref " + esc(batchMap[k].bank_ref) : ""} · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b>${batchMap[k]?.fees ? ` + ${money(batchMap[k].fees, batchMap[k].currency || "IDR")} fees` : ""}</summary>` +
+          `<details class="batch-sec"><summary class="section-h paid">💸 ${fmtDateTime(timeOf(k))} · <b>${esc(payeeStr)}</b> · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b>${batchMap[k]?.fees ? ` + ${money(batchMap[k].fees, batchMap[k].currency || "IDR")} fees` : ""} · <span class="fx-hint">by ${esc(nameMap[payer] || "—")}</span></summary>` +
           tableFn(rows, true, nameMap) +
           `</details>`;
       }
