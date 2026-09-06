@@ -3580,7 +3580,11 @@
                 </div>`;
             })
             .join("")}
-          <p class="hint" style="margin:6px 2px 0">Pay less than the outstanding amount to record a deposit or instalment — the invoice stays open for the balance.</p>
+          <p class="hint" style="margin:6px 2px 0">${
+            items.every((it) => remainingOf(it.type, it.r) === 0)
+              ? "Nothing outstanding — saving records a zero settlement and closes this off."
+              : "Pay less than the outstanding amount to record a deposit or instalment — the invoice stays open for the balance."
+          }</p>
         </div>
         <div class="form-grid" style="margin-top:16px">
           <label>Payment date
@@ -3762,7 +3766,13 @@
     const note = card.querySelector("input[name=note]").value.trim();
 
     if (!paidDate) { msg.textContent = "Enter the payment date."; msg.className = "msg error"; return; }
-    if (!amount || amount <= 0) { msg.textContent = "Enter the transferred amount."; msg.className = "msg error"; return; }
+    // zero is allowed: it settles a zero-value invoice (fully discounted,
+    // cancelled charge, goods sent free). Negative never is.
+    if (Number.isNaN(amount) || amount < 0) {
+      msg.textContent = "Enter the transferred amount (0 is allowed to settle a zero-value invoice).";
+      msg.className = "msg error";
+      return;
+    }
     if (file && file.size > 10 * 1024 * 1024) { msg.textContent = "Proof file is over 10 MB."; msg.className = "msg error"; return; }
 
     saveBtn.disabled = true;
@@ -3802,7 +3812,9 @@
           it,
           amount: allocInputs[i] ? Number(allocInputs[i].value) || 0 : remainingOf(it.type, it.r),
         }))
-        .filter((a) => a.amount > 0);
+        // keep zero rows when there is nothing left to pay — that is how a
+        // zero-value invoice gets closed off
+        .filter((a) => a.amount > 0 || remainingOf(a.it.type, a.it.r) === 0);
       if (!allocations.length) throw new Error("Enter how much is being paid against at least one invoice.");
 
       const payments = allocations.filter((a) => a.it.type === "payment");
