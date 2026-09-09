@@ -3299,8 +3299,17 @@
         const k = r.batch_id || "t:" + r.paid_at;
         (batchGroups[k] = batchGroups[k] || []).push(r);
       });
-      const timeOf = (k) => batchMap[k]?.created_at || batchGroups[k][0].paid_at;
-      const keys = Object.keys(batchGroups).sort((a, b) => new Date(timeOf(b)) - new Date(timeOf(a)));
+      // A payment is dated by the day the money moved — the transfer date on
+      // the batch — not by the moment somebody keyed the entry in.
+      const dayOf = (k) =>
+        batchMap[k]?.paid_date ||
+        String(batchMap[k]?.created_at || batchGroups[k][0].paid_at || "").slice(0, 10);
+      // two transfers on the same day keep the order they were entered in
+      const seqOf = (k) => String(batchMap[k]?.created_at || batchGroups[k][0].paid_at || "");
+      const keys = Object.keys(batchGroups).sort((a, b) => {
+        if (dayOf(a) !== dayOf(b)) return dayOf(a) < dayOf(b) ? 1 : -1;
+        return seqOf(a) < seqOf(b) ? 1 : -1;
+      });
       for (const k of keys) {
         const rows = batchGroups[k];
         const payer = batchMap[k]?.created_by || rows[0].paid_by;
@@ -3323,7 +3332,7 @@
           payees.slice(0, 2).join(", ") + (payees.length > 2 ? ` +${payees.length - 2} more` : "");
 
         body +=
-          `<details class="batch-sec"><summary class="section-h paid">💸 ${fmtDateTime(timeOf(k))} · <b>${esc(payeeStr)}</b> · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b>${batchMap[k]?.fees ? ` + ${money(batchMap[k].fees, batchMap[k].currency || "IDR")} fees` : ""} · <span class="fx-hint">by ${esc(nameMap[payer] || "—")}</span></summary>` +
+          `<details class="batch-sec"><summary class="section-h paid">💸 ${fmtDate(dayOf(k))} · <b>${esc(payeeStr)}</b> · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b>${batchMap[k]?.fees ? ` + ${money(batchMap[k].fees, batchMap[k].currency || "IDR")} fees` : ""} · <span class="fx-hint">by ${esc(nameMap[payer] || "—")}</span></summary>` +
           tableFn(rows, true, nameMap) +
           `</details>`;
       }
