@@ -395,6 +395,42 @@ details.batch-sec .card { margin: 8px 0 14px; }
 .filter-pill.active { background: var(--ink); color: #fff; border-color: var(--ink); }
 .spacer { flex: 1; }
 
+/* sortable table headers (purchasing book) */
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { color: var(--ink); }
+th.sortable.sorted { color: var(--ink); }
+.sort-caret { font-size: 10px; margin-left: 5px; opacity: .35; }
+th.sortable.sorted .sort-caret { opacity: 1; }
+td.row-edit { width: 44px; text-align: right; padding-left: 0; }
+
+/* second toolbar row: column filters */
+.toolbar.filters { margin-top: -8px; margin-bottom: 14px; }
+.toolbar.filters select,
+.toolbar.filters input[type="date"] { width: auto; min-width: 130px; }
+.daterange {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 600; color: var(--muted);
+}
+.daterange input { margin: 0; }
+
+/* admin invoice editor */
+.ed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.ed-f { display: block; font-size: 13px; font-weight: 600; color: var(--muted); }
+.ed-f input, .ed-f select { margin-top: 4px; }
+/* item names carry their options now, so the name gets a whole row to itself
+   and the numbers sit underneath it */
+.ed-line {
+  display: grid; grid-template-columns: 150px 90px 1fr 36px;
+  gap: 8px; align-items: center;
+  padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px dashed var(--line);
+}
+.ed-line .ed-name { grid-column: 1 / -1; font-weight: 600; }
+.ed-line input { margin: 0; }
+@media (max-width: 720px) {
+  .ed-grid { grid-template-columns: 1fr; }
+  .ed-line { grid-template-columns: 1fr 70px 1fr 32px; }
+}
+
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); }

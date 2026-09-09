@@ -42,6 +42,11 @@
     purchAll: null,           // cached purchasing book rows
     purchSearch: "",
     purchFilter: "all",
+    purchSort: { key: "date", dir: "desc" },
+    purchSupplier: "",
+    purchCurrency: "",
+    purchFrom: "",
+    purchTo: "",
   };
 
   const LOCATIONS = ["Manhattan", "Sedayu", "Premiere"];
@@ -2617,6 +2622,9 @@
 
     const q = (state.purchSearch || "").trim().toLowerCase();
     const f = state.purchFilter || "all";
+    // editing writes to payment_requests, which the database only allows to
+    // reviewers — don't offer a pencil that would fail on save
+    const canEdit = can("approval");
 
     // value in IDR: what was actually paid, else the invoice/estimate
     const idrOf = (r) => {
@@ -2625,11 +2633,17 @@
       if (r.idr_estimate != null) return Number(r.idr_estimate);
       return null;
     };
+    // the invoice's own date, falling back to when it was entered
+    const dateOf = (r) => r.invoice_date || String(r.created_at || "").slice(0, 10);
 
     const matches = (r) => {
       if (f === "paid" && !r.paid_at) return false;
       if (f === "unpaid" && (r.paid_at || r.status !== "approved")) return false;
       if (f === "pending" && r.status !== "pending") return false;
+      if (state.purchSupplier && (r.payee_name || "") !== state.purchSupplier) return false;
+      if (state.purchCurrency && (r.currency || "IDR") !== state.purchCurrency) return false;
+      if (state.purchFrom && dateOf(r) < state.purchFrom) return false;
+      if (state.purchTo && dateOf(r) > state.purchTo) return false;
       if (!q) return true;
       const hay = [
         r.ref_number, r.payee_name, r.title, r.buyer, r.description,
@@ -2640,6 +2654,28 @@
     };
 
     const rows = state.purchAll.filter(matches);
+
+    // ---- sorting: click a column header to sort by it ----------------------
+    const SORTS = {
+      ref: (r) => (r.ref_number || "").toLowerCase(),
+      date: (r) => dateOf(r) || "",
+      supplier: (r) => (r.payee_name || "").toLowerCase(),
+      // blanks sort last whichever way round, so they never top the list
+      amount: (r) => (idrOf(r) == null ? -1 : idrOf(r)),
+      status: (r) => r.status || "",
+      paid: (r) => r.paid_at || "",
+    };
+    const sort = state.purchSort || { key: "date", dir: "desc" };
+    const sortKey = SORTS[sort.key] ? sort.key : "date";
+    const sortVal = SORTS[sortKey];
+    const dir = sort.dir === "asc" ? 1 : -1;
+    rows.sort((a, b) => {
+      const va = sortVal(a), vb = sortVal(b);
+      if (va < vb) return -dir;
+      if (va > vb) return dir;
+      return 0;
+    });
+
     const totalIdr = rows.reduce((s, r) => s + (idrOf(r) || 0), 0);
     const unknown = rows.filter((r) => idrOf(r) == null).length;
     const paidCount = rows.filter((r) => r.paid_at).length;
@@ -2648,8 +2684,27 @@
       (r) => (r.currency || "IDR") !== "IDR" && r.idr_actual == null && idrOf(r) != null
     ).length;
 
+    // paid foreign invoices still carrying only an estimate — what the
+    // "reprice paid invoices" button exists to clear up. Counted over the whole
+    // book, not the filtered view, because that is what the button acts on.
+    const needReprice = state.purchAll.filter(
+      (r) => r.paid_at && (r.currency || "IDR") !== "IDR" && r.idr_actual == null && Number(r.amount) > 0
+    ).length;
+
     const pill = (key, label) =>
       `<button class="filter-pill ${f === key ? "active" : ""}" data-filter="${key}">${label}</button>`;
+    const th = (key, label, cls = "") =>
+      `<th class="sortable ${cls}${sortKey === key ? " sorted" : ""}" data-sort="${key}">${label}<span class="sort-caret">${
+        sortKey === key ? (sort.dir === "asc" ? "▲" : "▼") : "↕"
+      }</span></th>`;
+
+    const suppliers = [...new Set(state.purchAll.map((r) => r.payee_name).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b));
+    const currencies = [...new Set(state.purchAll.map((r) => r.currency || "IDR"))].sort();
+    const opt = (v, cur, label) =>
+      `<option value="${esc(v)}"${cur === v ? " selected" : ""}>${esc(label != null ? label : v)}</option>`;
+    const filtered =
+      state.purchSupplier || state.purchCurrency || state.purchFrom || state.purchTo;
 
     root.innerHTML = `
       <div class="toolbar">
@@ -2657,8 +2712,28 @@
                value="${esc(state.purchSearch || "")}" style="max-width:340px" />
         ${pill("all", "All")}${pill("paid", "Paid")}${pill("unpaid", "Approved – unpaid")}${pill("pending", "Pending")}
         <span class="spacer"></span>
+        ${
+          canEdit
+            ? `<button class="btn btn-ghost btn-sm" id="purch-reprice"${
+                needReprice ? "" : " disabled"
+              }>💱 Reprice paid invoices${needReprice ? ` (${needReprice})` : ""}</button>`
+            : ""
+        }
         <button class="btn btn-ghost btn-sm" id="purch-refresh">↻ Refresh</button>
         <button class="btn btn-ghost btn-sm" id="purch-export">⬇️ Export CSV</button>
+      </div>
+      <div class="toolbar filters">
+        <select id="purch-supplier" title="Supplier">
+          ${opt("", state.purchSupplier, "All suppliers")}${suppliers.map((s) => opt(s, state.purchSupplier)).join("")}
+        </select>
+        <select id="purch-currency" title="Currency">
+          ${opt("", state.purchCurrency, "All currencies")}${currencies.map((c) => opt(c, state.purchCurrency)).join("")}
+        </select>
+        <label class="daterange">Invoice date from
+          <input type="date" id="purch-from" value="${esc(state.purchFrom || "")}" /></label>
+        <label class="daterange">to
+          <input type="date" id="purch-to" value="${esc(state.purchTo || "")}" /></label>
+        ${filtered ? '<button class="btn btn-ghost btn-sm" id="purch-clear">✕ Clear filters</button>' : ""}
       </div>
       <div class="grand" style="margin-top:0">
         <span>${rows.length} invoice${rows.length === 1 ? "" : "s"} · ${paidCount} paid${
@@ -2671,7 +2746,9 @@
       ${
         rows.length
           ? `<div class="card table-wrap" style="margin-top:14px"><table>
-              <thead><tr><th>Invoice no</th><th>Date</th><th>Supplier</th><th>Amount</th><th>Status</th><th>Paid</th></tr></thead>
+              <thead><tr>${th("ref", "Invoice no")}${th("date", "Date")}${th("supplier", "Supplier")}${th(
+                "amount", "Amount", "amount"
+              )}${th("status", "Status")}${th("paid", "Paid")}${canEdit ? "<th></th>" : ""}</tr></thead>
               <tbody>${rows
                 .map((r) => {
                   const idr = idrOf(r);
@@ -2701,6 +2778,7 @@
                     }</td>
                     <td><span class="badge ${r.status}">${r.status}</span></td>
                     <td>${r.paid_at ? fmtDate(r.paid_at) : '<span class="paytiny">—</span>'}</td>
+                    ${canEdit ? '<td class="row-edit"><button class="btn btn-ghost btn-sm" data-edit title="Edit this invoice">✏️</button></td>' : ""}
                   </tr>`;
                 })
                 .join("")}</tbody></table></div>`
@@ -2721,14 +2799,311 @@
     $$(".filter-pill", root).forEach((p) =>
       p.addEventListener("click", () => { state.purchFilter = p.dataset.filter; renderPurchasing(); })
     );
-    $("#purch-refresh").addEventListener("click", () => { state.purchAll = null; renderPurchasing(); });
-    $("#purch-export").addEventListener("click", exportPurchasingCsv);
-    $$("tbody tr", root).forEach((tr) =>
-      tr.addEventListener("click", () => {
-        const r = rows.find((x) => x.id === tr.dataset.id);
-        if (r) openDetail(r, true, {}, "payment");
+    $$("th.sortable", root).forEach((h) =>
+      h.addEventListener("click", () => {
+        const key = h.dataset.sort;
+        // same column again flips the direction; a new column starts on the
+        // reading people expect — newest / largest / A–Z
+        state.purchSort =
+          sortKey === key
+            ? { key, dir: sort.dir === "asc" ? "desc" : "asc" }
+            : { key, dir: key === "date" || key === "amount" || key === "paid" ? "desc" : "asc" };
+        renderPurchasing();
       })
     );
+    const setFilter = (id, prop) =>
+      $("#" + id)?.addEventListener("change", (e) => { state[prop] = e.target.value; renderPurchasing(); });
+    setFilter("purch-supplier", "purchSupplier");
+    setFilter("purch-currency", "purchCurrency");
+    setFilter("purch-from", "purchFrom");
+    setFilter("purch-to", "purchTo");
+    $("#purch-clear")?.addEventListener("click", () => {
+      state.purchSupplier = state.purchCurrency = state.purchFrom = state.purchTo = "";
+      renderPurchasing();
+    });
+    $("#purch-refresh").addEventListener("click", () => { state.purchAll = null; renderPurchasing(); });
+    $("#purch-export").addEventListener("click", exportPurchasingCsv);
+    $("#purch-reprice")?.addEventListener("click", () => repriceAllPaid($("#purch-reprice")));
+    $$("tbody tr", root).forEach((tr) =>
+      tr.addEventListener("click", (e) => {
+        const r = rows.find((x) => x.id === tr.dataset.id);
+        if (!r) return;
+        if (e.target.closest("[data-edit]")) openEditInvoice(r);
+        else openDetail(r, true, {}, "payment");
+      })
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  //  Reprice every paid foreign invoice at the rupiah that actually left the
+  //  bank. The real rate is not the day's market rate — it is the transfer
+  //  itself, so it is derived from the payment batches, never from an FX feed.
+  //  Invoices that already carry a real IDR figure are left untouched.
+  // --------------------------------------------------------------------------
+  async function repriceAllPaid(btn) {
+    const candidates = (state.purchAll || []).filter(
+      // a zero-value invoice has no rate to derive — leave it settled at zero
+      (r) => r.paid_at && (r.currency || "IDR") !== "IDR" && r.idr_actual == null && Number(r.amount) > 0
+    );
+    if (!candidates.length) { toast("Every paid foreign invoice already has its real IDR value"); return; }
+    if (!confirm(
+      `Reprice ${candidates.length} paid invoice${candidates.length === 1 ? "" : "s"} using the rupiah actually transferred?\n\n` +
+      "Invoices that already have a real IDR figure are left as they are."
+    )) return;
+
+    if (btn) { btn.disabled = true; btn.textContent = "💱 Repricing…"; }
+    try {
+      const byId = Object.fromEntries((state.purchAll || []).map((r) => [r.id, r]));
+      const ids = candidates.map((r) => r.id);
+
+      const { data: mine, error: aErr } = await sb
+        .from("payment_allocations")
+        .select("batch_id,payment_request_id,amount")
+        .in("payment_request_id", ids);
+      if (aErr) throw aErr;
+
+      const allocs = [...(mine || [])];
+      const covered = new Set(allocs.map((a) => a.payment_request_id));
+      // older rows may predate allocations: treat the invoice as one full
+      // allocation against the batch that settled it
+      candidates
+        .filter((r) => !covered.has(r.id) && r.batch_id && Number(r.amount) > 0)
+        .forEach((r) => allocs.push({ batch_id: r.batch_id, payment_request_id: r.id, amount: Number(r.amount) }));
+
+      const batchIds = [...new Set(allocs.map((a) => a.batch_id).filter(Boolean))];
+      if (!batchIds.length) { toast("None of these invoices is linked to a recorded payment", "error"); return; }
+
+      const { data: batches, error: bErr } = await sb
+        .from("disbursement_batches")
+        .select("id,amount,currency,paid_date,bank_ref")
+        .in("id", batchIds);
+      if (bErr) throw bErr;
+      const batchMap = Object.fromEntries((batches || []).map((b) => [b.id, b]));
+
+      // Every invoice settled by those transfers, not just ours: a transfer may
+      // also have covered rupiah invoices, whose share has to come off the top
+      // before the rest is split. Missing one would inflate the rate.
+      const { data: siblings, error: sErr } = await sb
+        .from("payment_allocations")
+        .select("batch_id,payment_request_id,amount")
+        .in("batch_id", batchIds);
+      if (sErr) throw sErr;
+      const lineKey = (a) => a.batch_id + "|" + a.payment_request_id;
+      const lineMap = new Map((siblings || []).map((a) => [lineKey(a), a]));
+      const inBatch = new Set(batchIds);
+      // fill in anything settled by these transfers that has no allocation row
+      [...allocs, ...(state.purchAll || [])
+        .filter((r) => r.paid_at && inBatch.has(r.batch_id) && Number(r.amount) > 0)
+        .map((r) => ({ batch_id: r.batch_id, payment_request_id: r.id, amount: Number(r.amount) }))]
+        .forEach((a) => { if (!lineMap.has(lineKey(a))) lineMap.set(lineKey(a), a); });
+      const allLines = [...lineMap.values()].map((a) => ({ a, r: byId[a.payment_request_id] }));
+
+      // work out one realized rate per batch
+      const rateOf = {};
+      const skipped = [];
+      const liveRates = {};
+      for (const id of batchIds) {
+        const b = batchMap[id];
+        const label = b && b.paid_date ? fmtDate(b.paid_date) : "a payment";
+        if (!b || !(Number(b.amount) > 0)) { skipped.push(`${label}: no amount recorded on the transfer`); continue; }
+        if ((b.currency || "IDR") !== "IDR") {
+          skipped.push(`${label}: the transfer itself is in ${b.currency}, so it holds no rupiah figure`);
+          continue;
+        }
+        const lines = allLines.filter((x) => x.a.batch_id === id && x.r);
+        const idrLines = lines.filter((x) => (x.r.currency || "IDR") === "IDR");
+        const fxLines = lines.filter((x) => (x.r.currency || "IDR") !== "IDR");
+        const curs = [...new Set(fxLines.map((x) => x.r.currency))];
+        if (curs.length > 1) {
+          skipped.push(`${label}: one transfer covering ${curs.join(" and ")} — split it by hand`);
+          continue;
+        }
+        const fxTotal = fxLines.reduce((s, x) => s + Number(x.a.amount || 0), 0);
+        // the rupiah left over once the rupiah invoices in the same transfer
+        // have taken their share
+        const idrForFx = Number(b.amount) - idrLines.reduce((s, x) => s + Number(x.a.amount || 0), 0);
+        if (!(fxTotal > 0) || !(idrForFx > 0)) { skipped.push(`${label}: nothing left to allocate`); continue; }
+        const rate = idrForFx / fxTotal;
+
+        // Sanity band. A transfer amount entered in the wrong currency, or a
+        // wire covering invoices that were never linked to it, produces a rate
+        // that is out by a factor — and would write a badly wrong figure into
+        // the books. Compare against today's market rate before trusting it.
+        const cur = curs[0];
+        if (!(cur in liveRates)) liveRates[cur] = (await fetchIdrRate(cur)) || null;
+        const live = liveRates[cur];
+        if (live && (rate > live * 1.25 || rate < live * 0.75)) {
+          skipped.push(
+            `${label}: works out at 1 ${cur} = ${Math.round(rate).toLocaleString()} IDR, ` +
+            `far off today's ${Math.round(live).toLocaleString()} — check the transfer amount`
+          );
+          continue;
+        }
+        rateOf[id] = rate;
+      }
+
+      // add up each invoice's rupiah across the transfers that paid it
+      const idrByInvoice = {};
+      const incomplete = new Set();
+      for (const a of allocs) {
+        const rate = rateOf[a.batch_id];
+        if (rate == null) { incomplete.add(a.payment_request_id); continue; }
+        idrByInvoice[a.payment_request_id] = (idrByInvoice[a.payment_request_id] || 0) + Number(a.amount || 0) * rate;
+      }
+
+      let done = 0, failed = 0, noPayment = 0;
+      for (const r of candidates) {
+        const idr = idrByInvoice[r.id];
+        // a part-derived total would silently understate the invoice
+        if (idr == null || incomplete.has(r.id)) { noPayment++; continue; }
+        if (await repriceToIdr(r, Math.round(idr))) done++; else failed++;
+      }
+
+      state.purchAll = null;
+      const bits = [`${done} invoice${done === 1 ? "" : "s"} repriced`];
+      if (noPayment) bits.push(`${noPayment} could not be derived from a transfer`);
+      if (failed) bits.push(`${failed} failed to save`);
+      toast(bits.join(" · "), done ? "ok" : "error");
+      if (skipped.length) alert("Left alone:\n\n• " + [...new Set(skipped)].join("\n• "));
+      renderPurchasing();
+    } catch (err) {
+      toast(friendlyError(err), "error");
+      if (btn) { btn.disabled = false; btn.textContent = "💱 Reprice paid invoices"; }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  //  Admin: correct an invoice by hand. Imported rows and AI-read documents
+  //  both need fixing occasionally — supplier misspelt, wrong date, an item
+  //  whose options were lost. Money that has already been settled is shown
+  //  but not edited here; use the repricing action for that.
+  // --------------------------------------------------------------------------
+  function openEditInvoice(r) {
+    const isSupplier = r.request_type === "supplier";
+    const items = Array.isArray(r.items) ? r.items : [];
+    const field = (name, label, value, type = "text", extra = "") =>
+      `<label class="ed-f">${label}<input name="${name}" type="${type}" value="${esc(value == null ? "" : value)}" ${extra} /></label>`;
+
+    const card = el(`
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:12px">
+          <div>
+            <h3 style="margin:0 0 4px">Edit invoice</h3>
+            <span class="paytiny">${esc(r.ref_number || r.title || "—")} · ${esc(r.payee_name || "")}</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" data-close>✕</button>
+        </div>
+        <form id="ed-form" style="margin-top:14px">
+          <div class="ed-grid">
+            ${field("payee_name", isSupplier ? "Supplier" : "Payee / Vendor", r.payee_name)}
+            ${field("ref_number", "PO / Invoice no", r.ref_number)}
+            ${field("invoice_date", "Invoice date", r.invoice_date, "date")}
+            ${field("transaction_date", "Transfer date", r.transaction_date, "date")}
+            <label class="ed-f">Currency
+              <select name="currency">${SP_CURRENCIES.map(
+                (c) => `<option${c === (r.currency || "IDR") ? " selected" : ""}>${c}</option>`
+              ).join("")}</select>
+            </label>
+            ${field("amount", "Invoice total", r.amount, "number", 'step="0.01" min="0"')}
+            ${field("buyer", "Bought by", r.buyer)}
+            ${field("payment_terms", "Payment terms", r.payment_terms)}
+            ${field("bank_name", "Bank name", r.bank_name)}
+            ${field("bank_account_name", "Account name", r.bank_account_name)}
+            ${field("bank_account_number", "Account number", r.bank_account_number)}
+          </div>
+          <label class="ed-f" style="margin-top:10px">Notes
+            <input name="description" value="${esc(r.description || "")}" />
+          </label>
+
+          <div class="ln4-head" style="display:block;grid-template-columns:none">Item lines</div>
+          <div id="ed-lines"></div>
+          <button type="button" class="btn btn-ghost btn-sm" id="ed-add">+ Add line</button>
+
+          ${
+            r.paid_at
+              ? `<p class="hint" style="margin-top:12px">💸 Paid ${fmtDate(r.paid_at)}${
+                  r.idr_actual ? " · " + money(r.idr_actual, "IDR") + " settled" : ""
+                }. Changing the total here does not change what was transferred.</p>`
+              : ""
+          }
+          <div class="modal-actions">
+            <button type="submit" class="btn btn-primary">Save changes</button>
+            <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+          </div>
+          <p id="ed-msg" class="msg"></p>
+        </form>
+      </div>`);
+
+    openModal(card);
+    const linesBox = card.querySelector("#ed-lines");
+    const addLine = (it = {}) => {
+      const row = el(`
+        <div class="ed-line">
+          <input class="ed-name"  value="${esc(it.item_name || "")}" placeholder="Item name, including its options" />
+          <input class="ed-code"  value="${esc(it.item_code && it.item_code !== "N/A" ? it.item_code : "")}" placeholder="Code / SKU" />
+          <input class="ed-qty"   type="number" step="0.01" min="0" value="${esc(it.qty != null ? it.qty : 1)}" placeholder="Qty" />
+          <input class="ed-price" type="number" step="0.01" min="0" value="${esc(it.unit_price != null ? it.unit_price : "")}" placeholder="Unit price" />
+          <button type="button" class="btn btn-ghost btn-sm ed-del" title="Remove line">✕</button>
+        </div>`);
+      row._src = it;
+      row.querySelector(".ed-del").addEventListener("click", () => row.remove());
+      linesBox.append(row);
+      return row;
+    };
+    items.forEach(addLine);
+    card.querySelector("#ed-add").addEventListener("click", () => addLine());
+
+    card.querySelector("#ed-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = card.querySelector("#ed-msg");
+      const val = (n) => card.querySelector(`[name=${n}]`).value.trim();
+      const payee = val("payee_name");
+      if (!payee) { msg.textContent = "The supplier / payee name cannot be empty."; msg.className = "msg error"; return; }
+      const amount = Number(val("amount"));
+      if (Number.isNaN(amount) || amount < 0) { msg.textContent = "Enter a valid invoice total."; msg.className = "msg error"; return; }
+
+      const newItems = [];
+      for (const row of $$(".ed-line", card)) {
+        const name = row.querySelector(".ed-name").value.trim();
+        const price = Number(row.querySelector(".ed-price").value) || 0;
+        if (!name && !price) continue;
+        if (!name) { msg.textContent = "Every line needs an item name."; msg.className = "msg error"; return; }
+        const code = row.querySelector(".ed-code").value.trim();
+        // keep whatever the line already carried (landed cost, IDR repricing)
+        // so an edit to the name doesn't wipe the figures underneath it
+        newItems.push({
+          ...(row._src || {}),
+          item_name: name,
+          qty: Number(row.querySelector(".ed-qty").value) || 1,
+          unit_price: price,
+          item_code: code || null,
+        });
+      }
+
+      const patch = {
+        payee_name: payee,
+        ref_number: val("ref_number") || null,
+        invoice_date: val("invoice_date") || null,
+        transaction_date: val("transaction_date") || null,
+        currency: val("currency"),
+        amount,
+        buyer: val("buyer") || null,
+        payment_terms: val("payment_terms") || null,
+        bank_name: val("bank_name") || null,
+        bank_account_name: val("bank_account_name") || null,
+        bank_account_number: val("bank_account_number") || null,
+        description: val("description") || null,
+        items: newItems.length ? newItems : null,
+      };
+
+      msg.className = "msg"; msg.textContent = "Saving…";
+      const { error } = await sb.from("payment_requests").update(patch).eq("id", r.id);
+      if (error) { msg.textContent = friendlyError(error); msg.className = "msg error"; return; }
+      state.purchAll = null;
+      closeModal();
+      toast("Invoice updated");
+      route();
+    });
   }
 
   // ==========================================================================
@@ -3495,6 +3870,13 @@
         } else rp.disabled = false;
       });
       actions.append(rp);
+    }
+
+    // Admin: correct the invoice itself — supplier, dates, totals, item lines
+    if (isAdmin && type === "payment" && can("approval") && !opts.hidePrices) {
+      const ed = el('<button class="btn btn-ghost">✏️ Edit invoice</button>');
+      ed.addEventListener("click", () => openEditInvoice(r));
+      actions.append(ed);
     }
 
     // Owner: delete own pending request
