@@ -915,6 +915,20 @@
     }
   }
 
+  // Landed cost: what a line really costs once the invoice's charges — tax,
+  // shipping, handling — are spread over it, prorated by value exactly as the
+  // purchasing spreadsheet did. It belongs to the invoice, not the payment:
+  // an invoice has its landed cost the moment it is entered, paid or not.
+  function withLandedCost(items, charges) {
+    const net = items.reduce((s, it) => s + (Number(it.qty) || 1) * (Number(it.unit_price) || 0), 0);
+    const extra = (Array.isArray(charges) ? charges : []).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const factor = net > 0 ? 1 + extra / net : 1;
+    return items.map((it) => ({
+      ...it,
+      landed_unit_price: Math.round((Number(it.unit_price) || 0) * factor * 1e6) / 1e6,
+    }));
+  }
+
   async function submitSupplier(e) {
     e.preventDefault();
     const form = e.target;
@@ -979,7 +993,7 @@
         currency: cur,
         fx_rate: cur === "IDR" ? null : form._fxRate || null,
         idr_estimate: cur === "IDR" ? null : form._idrEstimate || null,
-        items,
+        items: withLandedCost(items, chargesList),
         charges: chargesList.length ? chargesList : null,
         invoice_date: form.invoice_date.value || null,
         buyer: form.buyer.value.trim() || null,
@@ -3093,7 +3107,7 @@
         bank_account_name: val("bank_account_name") || null,
         bank_account_number: val("bank_account_number") || null,
         description: val("description") || null,
-        items: newItems.length ? newItems : null,
+        items: newItems.length ? withLandedCost(newItems, r.charges) : null,
       };
 
       msg.className = "msg"; msg.textContent = "Saving…";
@@ -3651,7 +3665,10 @@
       } else {
         const repriced = r.idr_actual && r.items.some((it) => it.idr_unit_price != null);
         const hasCode = r.items.some((it) => it.item_code && it.item_code !== "N/A");
-        const hasLanded = r.items.some((it) => it.landed_unit_price != null);
+        // only worth a column when charges actually moved the price
+        const hasLanded = r.items.some(
+          (it) => it.landed_unit_price != null && Number(it.landed_unit_price) !== Number(it.unit_price)
+        );
         const lineRows = r.items
           .map((it, i) => {
             const qty = Number(it.qty) || 1;
