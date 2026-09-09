@@ -114,6 +114,11 @@
     if (/JWT|not authenticated|invalid token/i.test(m)) {
       return "Your session expired — please log out and back in.";
     }
+    // a truncated or malformed reply from the document reader
+    if (/JSON|Unexpected token|Expected .,.|position \d+/i.test(m)) {
+      return "The document couldn't be read completely — nothing was imported. " +
+             "It may be too long; try splitting the PDF, or enter the lines manually.";
+    }
     return m || "Something went wrong.";
   }
 
@@ -3886,6 +3891,25 @@
   // ==========================================================================
   //  VIEW: DISBURSE (admin) — approved & unpaid items, grouped by user
   // ==========================================================================
+  // Total for a set of items: per-currency, plus an IDR equivalent when any
+  // of them are foreign. Recomputed as the selection changes.
+  function destTotalHtml(items) {
+    const totals = {};
+    let idr = 0, foreign = false, unknown = false;
+    items.forEach((it) => {
+      const c = TYPES[it.type].currency(it.r) || "IDR";
+      totals[c] = (totals[c] || 0) + remainingOf(it.type, it.r);
+      if (c !== "IDR") foreign = true;
+      const v = idrValue(it.type, it.r);
+      if (v == null) unknown = true; else idr += v;
+    });
+    if (!items.length) return '<span class="fx-hint">nothing selected</span>';
+    return (
+      Object.entries(totals).map(([c, v]) => money(v, c)).join(" + ") +
+      (foreign ? `<div class="fx-hint">≈ ${money(idr, "IDR")}${unknown ? " + unknown" : ""}</div>` : "")
+    );
+  }
+
   async function renderDisburse() {
     const root = $("#view-root");
     root.innerHTML = '<div class="loading">Loading items to disburse…</div>';
@@ -4005,26 +4029,13 @@
           destList.push({ uid, items: d.items, label: d.label, bank: d.bank, acct: d.acct, holder: d.holder });
           const di = destList.length - 1;
 
-          const dTotals = {};
-          let dIdr = 0, dForeign = false, dUnknown = false;
-          d.items.forEach((it) => {
-            const c = TYPES[it.type].currency(it.r) || "IDR";
-            dTotals[c] = (dTotals[c] || 0) + remainingOf(it.type, it.r);
-            if (c !== "IDR") dForeign = true;
-            const v = idrValue(it.type, it.r);
-            if (v == null) dUnknown = true; else dIdr += v;
-          });
-          const dTotalStr =
-            Object.entries(dTotals).map(([c, v]) => money(v, c)).join(" + ") +
-            (dForeign
-              ? `<div class="fx-hint">≈ ${money(dIdr, "IDR")}${dUnknown ? " + unknown" : ""}</div>`
-              : "");
+          const dTotalStr = destTotalHtml(d.items);
           const acctLine = d.acct
             ? `${esc(d.bank || "Bank")} · <span class="rek">${esc(d.acct)}</span>${d.holder ? " · " + esc(d.holder) : ""}`
             : '<span class="missing">⚠️ no account on file</span>';
 
           const rowsHtml = d.items
-            .map((it) => {
+            .map((it, i) => {
               const { type, r } = it;
               const cur = TYPES[type].currency(r) || "IDR";
               const partial = isPartiallyPaid(r);
@@ -4032,6 +4043,8 @@
               const idrEq = idrValue(type, r);
               return `
                 <tr data-type="${type}" data-id="${r.id}">
+                  <td><input type="checkbox" class="sel-dest" data-di="${di}" data-i="${i}"
+                             style="width:17px;height:17px;accent-color:var(--green-600)" /></td>
                   <td><span class="type-tag ${type}">${TYPES[type].label}</span></td>
                   <td>${esc(TYPES[type].title(r))}${
                     partial
@@ -4057,13 +4070,16 @@
                   <div class="dest-bank">${acctLine}</div>
                 </div>
                 <div class="dest-actions">
-                  <span class="dest-total">${dTotalStr}</span>
+                  <span class="dest-total" data-di="${di}">${dTotalStr}</span>
                   <button class="btn btn-success btn-sm pay-dest" data-di="${di}">💸 Pay (${d.items.length})</button>
                 </div>
               </div>
               <div class="table-wrap">
                 <table>
-                  <thead><tr><th>Type</th><th>Description</th><th>Approved</th><th>Amount</th><th></th></tr></thead>
+                  <thead><tr>
+                    <th style="width:34px"><input type="checkbox" class="sel-dest-all" data-di="${di}"
+                        title="Select all for this payee" style="width:17px;height:17px;accent-color:var(--green-600)" /></th>
+                    <th>Type</th><th>Description</th><th>Approved</th><th>Amount</th><th></th></tr></thead>
                   <tbody>${rowsHtml}</tbody>
                 </table>
               </div>
@@ -4098,10 +4114,10 @@
 
     root.innerHTML = html;
 
-    // row click -> detail modal (ignore clicks on the Mark-paid button)
+    // row click -> detail modal (ignore the pay button and the checkbox)
     $$("tbody tr", root).forEach((tr) => {
       tr.addEventListener("click", (e) => {
-        if (e.target.closest(".mark-paid")) return;
+        if (e.target.closest(".mark-paid, .sel-dest")) return;
         const it = items.find((x) => x.type === tr.dataset.type && x.r.id === tr.dataset.id);
         if (it) openDetail(it.r, true, nameMap, it.type);
       });
@@ -4132,12 +4148,54 @@
         if (groupItems.length) openPaymentModal(groupItems);
       })
     );
-    // pay one destination (supplier / rekening) in a single payment entry
+    // ---- selecting a subset of a payee's invoices ----
+    // Selection stays inside one destination: a payment is one transfer to one
+    // account, so items from different payees can't be combined.
+    const selectedFor = (di) => {
+      const d = destList[Number(di)];
+      const picked = $$(`.sel-dest[data-di="${di}"]`, root)
+        .filter((c) => c.checked)
+        .map((c) => d.items[Number(c.dataset.i)]);
+      return picked.length ? picked : null; // null = nothing ticked, means "all"
+    };
+
+    const refreshDest = (di) => {
+      const d = destList[Number(di)];
+      const picked = selectedFor(di);
+      const shown = picked || d.items;
+      const btn = $(`.pay-dest[data-di="${di}"]`, root);
+      if (btn) btn.textContent = picked
+        ? `💸 Pay selected (${picked.length} of ${d.items.length})`
+        : `💸 Pay (${d.items.length})`;
+      const tot = $(`.dest-total[data-di="${di}"]`, root);
+      if (tot) tot.innerHTML = destTotalHtml(shown);
+      const all = $(`.sel-dest-all[data-di="${di}"]`, root);
+      if (all) {
+        const boxes = $$(`.sel-dest[data-di="${di}"]`, root);
+        const n = boxes.filter((c) => c.checked).length;
+        all.checked = n === boxes.length && n > 0;
+        all.indeterminate = n > 0 && n < boxes.length;
+      }
+    };
+
+    $$(".sel-dest", root).forEach((c) =>
+      c.addEventListener("click", (e) => { e.stopPropagation(); refreshDest(c.dataset.di); })
+    );
+    $$(".sel-dest-all", root).forEach((a) =>
+      a.addEventListener("click", (e) => {
+        e.stopPropagation();
+        $$(`.sel-dest[data-di="${a.dataset.di}"]`, root).forEach((c) => (c.checked = a.checked));
+        refreshDest(a.dataset.di);
+      })
+    );
+
+    // pay one destination — the ticked invoices, or all of them if none ticked
     $$(".pay-dest", root).forEach((b) =>
       b.addEventListener("click", (e) => {
         e.stopPropagation();
         const d = destList[Number(b.dataset.di)];
-        if (d && d.items.length) openPaymentModal(d.items);
+        const items = selectedFor(b.dataset.di) || (d && d.items);
+        if (items && items.length) openPaymentModal(items);
       })
     );
   }

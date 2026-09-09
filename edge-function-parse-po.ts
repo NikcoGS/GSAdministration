@@ -109,7 +109,9 @@ Deno.serve(async (req) => {
       },
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 3000,
+        // Long invoices run to dozens of line items across several pages;
+        // 3000 was too small and truncated the JSON mid-array.
+        max_tokens: 16000,
         messages: [{ role: "user", content: [fileBlock, { type: "text", text: prompt }] }],
       }),
     });
@@ -125,10 +127,30 @@ Deno.serve(async (req) => {
       .map((b: { text: string }) => b.text)
       .join("");
 
+    // The model ran out of room: the JSON is cut off part-way through the item
+    // list. Never return a partial invoice — a half-read item list would look
+    // complete but total up wrong.
+    if (out.stop_reason === "max_tokens") {
+      return json({
+        error:
+          "This document is too long to read in one pass — the item list was cut off. " +
+          "Enter the lines manually, or split the PDF and read it in parts.",
+      }, 422);
+    }
+
     const m = text.match(/\{[\s\S]*\}/);
     if (!m) return json({ error: "Could not read items from this document." }, 422);
 
-    const parsed = JSON.parse(m[0]);
+    let parsed;
+    try {
+      parsed = JSON.parse(m[0]);
+    } catch (_e) {
+      return json({
+        error:
+          "The document was read but the result came back incomplete, so no items were imported. " +
+          "Try again, or enter the lines manually.",
+      }, 422);
+    }
     if (mode === "payment_proof") return json(parsed);
     if (!Array.isArray(parsed.items)) parsed.items = [];
 
