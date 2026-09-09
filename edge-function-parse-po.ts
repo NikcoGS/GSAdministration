@@ -29,6 +29,16 @@ Extract:
   * qty is the ordered quantity (default 1 if not stated)
   * unit examples: pcs, box, kg, roll, set — null if not stated
   * ignore prices, discounts, taxes, shipping, and totals
+  * OPTIONS ARE PART OF THE NAME. If the document has a separate Options /
+    Specification / Variant / Description column, or option lines sitting under
+    an item (flex, shaft, iron number, loft, lie, length, grip, hand, colour,
+    size), append them to item_name separated by " — " and commas, e.g.
+    "FUJIKURA AXIOM 75 IRON SHAFTS (.355) — Iron: #6, Flex: R".
+    Several lines on the same invoice often share an identical base product name
+    and differ ONLY by these options; without them the lines cannot be told
+    apart when the goods are checked in. Never merge such lines together.
+  * If a product code / SKU column is present, prefix it: "SFJAXI75I6-R · FUJIKURA
+    AXIOM 75 IRON SHAFTS (.355) — Iron: #6, Flex: R".
 Reply with ONLY the JSON object, no other text:
 {"supplier": ..., "ref_number": ..., "items": [...]}`;
 
@@ -51,7 +61,7 @@ Extract:
 - "supplier": the supplier / vendor company name (string or null)
 - "ref_number": the invoice number or PO number (string or null)
 - "currency": the ISO 4217 currency code of the prices (e.g. "IDR", "USD", "SGD", "EUR", "JPY", "CNY"). Rupiah amounts written like "Rp 1.500.000" are "IDR".
-- "items": EVERY line item as {"item_name": string, "qty": number, "unit": string|null, "unit_price": number}
+- "items": EVERY line item as {"item_name": string, "item_code": string|null, "qty": number, "unit": string|null, "unit_price": number}
   * unit_price is the NET effective price per unit actually charged, in that currency (plain number, no separators, up to 2 decimals). If a line shows a discounted price, use the discounted price.
   * qty defaults to 1 if not stated
   * IMPORTANT — discounts are layered and must ALL end up inside the unit prices, never as separate lines:
@@ -60,6 +70,17 @@ Extract:
       3. If both exist, apply the line discount first, then prorate the document discount over the already-discounted prices.
     After prorating, the items must add up to the payable grand total; if rounding leaves a difference of a few cents, adjust the last item's unit_price so the sum matches exactly.
   * items must contain GOODS/SERVICES ONLY — never tax, shipping, or other charges, and never subtotal/discount/total rows.
+  * OPTIONS ARE PART OF THE NAME. If the invoice has a separate Options /
+    Specification / Variant column, or option lines under an item (flex, shaft,
+    iron number, loft, lie, length, grip, hand, colour, size), append them to
+    item_name separated by " — " and commas, e.g.
+    "FUJIKURA AXIOM 75 IRON SHAFTS (.355) — Iron: #6, Flex: R".
+    Many invoices repeat the same base product name across several lines that
+    differ ONLY by these options and by price; without the options those lines
+    are indistinguishable. Keep every line separate — never merge or sum lines
+    that share a base name.
+  * If the invoice has a product code / SKU column, put it in "item_code";
+    otherwise set item_code to null. Do not put the code inside item_name.
 - "charges": additional payable charges that are NOT goods, as [{"name": string, "amount": number}]
   * examples: tax ("PPN 11%", VAT), shipping ("Biaya Kirim", freight, ongkir), handling, admin fee, insurance
   * use the charge's name exactly as printed on the document

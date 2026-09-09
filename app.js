@@ -872,6 +872,9 @@
         row.querySelector(".ln-item").value = it.item_name || "";
         row.querySelector(".ln-qty").value = it.qty != null && it.qty > 0 ? it.qty : 1;
         row.querySelector(".ln-price").value = it.unit_price != null ? it.unit_price : "";
+        // the supplier's SKU has no column of its own — carry it on the row so
+        // it survives to the saved record and the exports
+        if (it.item_code) row.dataset.itemCode = it.item_code;
       });
 
       // fill the biaya/charges section from the document
@@ -923,7 +926,8 @@
       const price = Number(row.querySelector(".ln-price").value) || 0;
       if (!name && !price) continue;
       if (!name) { msg.textContent = "Every line needs an item name."; msg.className = "msg error"; return; }
-      items.push({ item_name: name, qty: qty || 1, unit_price: price });
+      const code = (row.dataset.itemCode || "").trim();
+      items.push({ item_name: name, qty: qty || 1, unit_price: price, ...(code ? { item_code: code } : {}) });
     }
     if (!items.length) { msg.textContent = "Add at least one item line."; msg.className = "msg error"; return; }
 
