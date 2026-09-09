@@ -3778,18 +3778,28 @@
         const bIds = [...new Set(allocs.map((a) => a.batch_id).filter(Boolean))];
         const bMap = {};
         if (bIds.length) {
-          const { data: bts } = await sb
-            .from("disbursement_batches").select("id,paid_date,bank_ref,note").in("id", bIds);
+          const { data: bts } = await sb.from("disbursement_batches").select("*").in("id", bIds);
           (bts || []).forEach((b) => (bMap[b.id] = b));
         }
         const paid = paidSoFar(r);
         const left = remainingOf(type, r);
+        // a transfer keyed with the wrong date or amount is corrected here —
+        // it is the record of the transfer, so nothing else should own it
+        const fixable = can("approval");
         const rowsHtml = allocs
           .map((a, i) => {
             const b = bMap[a.batch_id] || {};
             return `<tr><td>${i + 1}</td><td>${esc(fmtDate(b.paid_date || a.created_at))}</td>
               <td>${esc(b.bank_ref || "—")}</td>
-              <td class="amount">${money(a.amount, r.currency)}</td></tr>`;
+              <td class="amount">${money(a.amount, r.currency)}</td>${
+                fixable
+                  ? `<td class="row-edit">${
+                      a.batch_id
+                        ? `<button class="btn btn-ghost btn-sm" data-batch="${a.batch_id}" title="Correct this payment">✏️</button>`
+                        : ""
+                    }</td>`
+                  : ""
+              }</tr>`;
           })
           .join("");
         card.querySelector("#lines-slot").insertAdjacentHTML(
@@ -3799,9 +3809,14 @@
                left > 0 ? `, <b style="color:var(--amber)">${money(left, r.currency)} outstanding</b>` : " (settled in full)"
              }</div>
              <div class="table-wrap"><table>
-               <thead><tr><th>#</th><th>Date</th><th>Reference</th><th>Amount</th></tr></thead>
+               <thead><tr><th>#</th><th>Date</th><th>Reference</th><th>Amount</th>${
+                 fixable ? "<th></th>" : ""
+               }</tr></thead>
                <tbody>${rowsHtml}</tbody></table></div>
            </div>`
+        );
+        $$("[data-batch]", card).forEach((b) =>
+          b.addEventListener("click", () => openEditBatch(bMap[b.dataset.batch]))
         );
       }
     }
@@ -3817,6 +3832,11 @@
         if (bt.fees) bits.push("+ " + money(bt.fees, bt.currency || "IDR") + " fees");
         if (bt.bank_ref) bits.push("ref " + bt.bank_ref);
         if (bits.length) slot2.append(el(`<span class="hint">💸 ${esc(bits.join(" · "))}</span>`));
+        if (can("approval")) {
+          const fix = el('<button class="btn btn-ghost btn-sm">✏️ Correct payment</button>');
+          fix.addEventListener("click", () => openEditBatch(bt));
+          slot2.append(fix);
+        }
         if (bt.proof_path) {
           const { data: pu } = await sb.storage.from("payment-proofs").createSignedUrl(bt.proof_path, 120);
           if (pu) slot2.append(el(`<a class="btn btn-ghost btn-sm" href="${pu.signedUrl}" target="_blank" rel="noopener">🧾 View transfer proof</a>`));
@@ -4133,6 +4153,85 @@
     } finally {
       btn.disabled = false;
     }
+  }
+
+  // --------------------------------------------------------------------------
+  //  Correct a payment that was keyed in wrong — most often the date, because
+  //  the modal defaults to today and a transfer is often entered days later.
+  //  The date on the transfer is the date the invoices it settled are paid on,
+  //  so the database re-dates them all as soon as this is saved.
+  // --------------------------------------------------------------------------
+  function openEditBatch(bt) {
+    if (!bt || !bt.id) { toast("This payment has no record to correct", "error"); return; }
+    const card = el(`
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:12px">
+          <div>
+            <h3 style="margin:0 0 4px">Correct payment</h3>
+            <span class="paytiny">Recorded ${fmtDateTime(bt.created_at)}${
+              bt.bank_ref ? " · ref " + esc(bt.bank_ref) : ""
+            }</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" data-close>✕</button>
+        </div>
+        <form id="bt-form" style="margin-top:14px">
+          <div class="ed-grid">
+            <label class="ed-f">Payment date
+              <input name="paid_date" type="date" value="${esc(bt.paid_date || "")}" required /></label>
+            <label class="ed-f">Currency
+              <select name="currency">${SP_CURRENCIES.map(
+                (c) => `<option${c === (bt.currency || "IDR") ? " selected" : ""}>${c}</option>`
+              ).join("")}</select></label>
+            <label class="ed-f">Amount transferred
+              <input name="amount" type="number" step="0.01" min="0" value="${esc(bt.amount != null ? bt.amount : "")}" /></label>
+            <label class="ed-f">Bank fees
+              <input name="fees" type="number" step="0.01" min="0" value="${esc(bt.fees != null ? bt.fees : "")}" /></label>
+            <label class="ed-f">Reference number
+              <input name="bank_ref" value="${esc(bt.bank_ref || "")}" /></label>
+            <label class="ed-f">Note
+              <input name="note" value="${esc(bt.note || "")}" /></label>
+          </div>
+          <p class="hint" style="margin-top:12px">Changing the date re-dates every invoice, trip claim and petty cash claim this transfer settled. It does not change how much was applied to each one.</p>
+          <div class="modal-actions">
+            <button type="submit" class="btn btn-primary">Save payment</button>
+            <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+          </div>
+          <p id="bt-msg" class="msg"></p>
+        </form>
+      </div>`);
+
+    openModal(card);
+
+    card.querySelector("#bt-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = card.querySelector("#bt-msg");
+      const val = (n) => card.querySelector(`[name=${n}]`).value.trim();
+      const paidDate = val("paid_date");
+      if (!paidDate) { msg.textContent = "Enter the date the transfer was made."; msg.className = "msg error"; return; }
+      const amount = val("amount") === "" ? null : Number(val("amount"));
+      if (amount != null && (Number.isNaN(amount) || amount < 0)) {
+        msg.textContent = "Enter a valid transferred amount."; msg.className = "msg error"; return;
+      }
+      const fees = val("fees") === "" ? null : Number(val("fees"));
+
+      msg.className = "msg"; msg.textContent = "Saving…";
+      const { error } = await sb
+        .from("disbursement_batches")
+        .update({
+          paid_date: paidDate,
+          currency: val("currency"),
+          amount,
+          fees,
+          bank_ref: val("bank_ref") || null,
+          note: val("note") || null,
+        })
+        .eq("id", bt.id);
+      if (error) { msg.textContent = friendlyError(error); msg.className = "msg error"; return; }
+      state.purchAll = null;
+      closeModal();
+      toast("Payment corrected — everything it settled is now dated " + fmtDate(paidDate));
+      route();
+    });
   }
 
   // apply the realized IDR value (excl. fees) to one foreign-currency request
