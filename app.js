@@ -2399,12 +2399,15 @@
 
   // Build the two compilation tables once; used by both the CSV export and the
   // Google Sheets sync. Returns { invoiceRows, itemRows } including headers.
-  async function buildPurchasingRows() {
-    const { data: rows, error } = await sb
+  async function buildPurchasingRows(onlyIds) {
+    const { data: all, error } = await sb
       .from("payment_requests")
       .select("*")
       .order("invoice_date", { ascending: true, nullsFirst: false });
     if (error) throw new Error(error.message);
+    // the Purchasing Book exports what is on screen; the compilation export and
+    // the Google sync always send the whole book
+    const rows = onlyIds ? (all || []).filter((r) => onlyIds.has(r.id)) : all;
     if (!rows || !rows.length) throw new Error("Nothing to export yet.");
 
     // payment batches carry the transfer date / reference / fees
@@ -2485,7 +2488,9 @@
     const itemLines = [[
       "Invoice No", "Invoice Date", "Supplier", "Line Type", "Item Code", "Item / Charge",
       "Qty", "Unit", "Unit Price", "Line Total", "Currency",
-      "Unit Price (Rp)", "Line Total (Rp)", "Landed Unit Price", "Payment Status", "Payment Date",
+      "Unit Price (Rp)", "Line Total (Rp)",
+      "Landed Unit Price", "Landed Line Total", "Landed Unit Price (Rp)", "Landed Line Total (Rp)",
+      "Payment Status", "Payment Date",
     ]];
 
     rows.forEach((r) => {
@@ -2502,12 +2507,21 @@
         const price = Number(it.unit_price) || 0;
         // prefer the actual IDR unit price written at payment time
         const idrUnit = it.idr_unit_price != null ? Number(it.idr_unit_price) : rate ? price * rate : null;
+        // landed = unit price carrying its share of the invoice's tax/shipping.
+        // Convert it with the SAME effective rate the unit price got, so the
+        // two rupiah columns can never disagree about the exchange rate.
+        const landed = it.landed_unit_price != null ? Number(it.landed_unit_price) : null;
+        const lrate = it.idr_unit_price != null && price > 0 ? Number(it.idr_unit_price) / price : rate;
+        const idrLanded = landed == null || lrate == null ? null : landed * lrate;
         itemLines.push([
           ...base, "Item", it.item_code && it.item_code !== "N/A" ? it.item_code : "", it.item_name || "",
           qty, it.unit || "", num(price), num(qty * price), cur,
           idrUnit == null ? "" : num(idrUnit),
           idrUnit == null ? "" : num(qty * idrUnit),
-          it.landed_unit_price != null ? num(it.landed_unit_price) : "",
+          landed == null ? "" : num(landed),
+          landed == null ? "" : num(qty * landed),
+          idrLanded == null ? "" : num(idrLanded),
+          idrLanded == null ? "" : num(qty * idrLanded),
           status, payDate,
         ]);
       });
@@ -2520,7 +2534,7 @@
           1, "", num(amt), num(amt), cur,
           idrAmt == null ? "" : num(idrAmt),
           idrAmt == null ? "" : num(idrAmt),
-          "",
+          "", "", "", "",
           status, payDate,
         ]);
       });
@@ -2529,18 +2543,26 @@
     return { invoiceRows: lines, itemRows: itemLines, count: rows.length };
   }
 
-  async function exportPurchasingCsv() {
+  async function exportPurchasingCsv(onlyIds) {
     toast("Preparing export…");
     try {
-      const { invoiceRows, itemRows, count } = await buildPurchasingRows();
+      const { invoiceRows, itemRows, count } = await buildPurchasingRows(onlyIds);
       const stamp = new Date().toISOString().slice(0, 10);
-      downloadCsv(`GS_Purchasing_invoices_${stamp}.csv`, invoiceRows);
-      setTimeout(() => downloadCsv(`GS_Purchasing_items_${stamp}.csv`, itemRows), 600);
-      toast(`Exported ${count} invoice(s) and ${itemRows.length - 1} item line(s) ✔`);
+      const tag = onlyIds ? "_filtered" : "";
+      downloadCsv(`GS_Purchasing_invoices${tag}_${stamp}.csv`, invoiceRows);
+      setTimeout(() => downloadCsv(`GS_Purchasing_items${tag}_${stamp}.csv`, itemRows), 600);
+      toast(
+        `Exported ${count} invoice(s) and ${itemLineCount(itemRows)} item line(s)` +
+        (onlyIds ? " from the current filter" : "") + " ✔"
+      );
     } catch (e) {
       toast(e.message || "Export failed", "error");
     }
   }
+
+  // rows minus the header, and minus the charge rows — charges are not items
+  const itemLineCount = (itemRows) =>
+    itemRows.slice(1).filter((r) => r[3] === "Item").length;
 
   // ==========================================================================
   //  GOOGLE SYNC — writes the compilation into the Sheet, files into Drive
@@ -2836,7 +2858,9 @@
       renderPurchasing();
     });
     $("#purch-refresh").addEventListener("click", () => { state.purchAll = null; renderPurchasing(); });
-    $("#purch-export").addEventListener("click", exportPurchasingCsv);
+    $("#purch-export").addEventListener("click", () =>
+      exportPurchasingCsv(rows.length === state.purchAll.length ? null : new Set(rows.map((r) => r.id)))
+    );
     $("#purch-reprice")?.addEventListener("click", () => repriceAllPaid($("#purch-reprice")));
     $$("tbody tr", root).forEach((tr) =>
       tr.addEventListener("click", (e) => {
