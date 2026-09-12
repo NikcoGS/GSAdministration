@@ -4445,6 +4445,67 @@
     );
   }
 
+  // --------------------------------------------------------------------------
+  //  Payment order. Which supplier gets paid first is a decision, not a
+  //  property of the data, so it is kept on this browser rather than in the
+  //  database — the printed instruction sheet is what carries it to the team.
+  //  Destinations that have never been ordered sit after the ones that have.
+  // --------------------------------------------------------------------------
+  const DIS_ORDER_KEY = "gs-disburse-order";
+  function loadPayOrder() {
+    try { return JSON.parse(localStorage.getItem(DIS_ORDER_KEY)) || {}; } catch (_e) { return {}; }
+  }
+  function savePayOrder(keys, live) {
+    const rank = loadPayOrder();
+    keys.forEach((k, i) => (rank[k] = i));
+    // drop rankings for payees that are no longer waiting to be paid
+    const alive = new Set(live);
+    Object.keys(rank).forEach((k) => { if (!alive.has(k)) delete rank[k]; });
+    try { localStorage.setItem(DIS_ORDER_KEY, JSON.stringify(rank)); } catch (_e) { /* private mode */ }
+  }
+  // stable sort by saved rank; anything unranked keeps its natural order, last
+  function byPayOrder(keys, rank) {
+    return keys
+      .map((k, i) => ({ k, i, r: rank[k] != null ? rank[k] : Infinity }))
+      .sort((a, b) => (a.r !== b.r ? a.r - b.r : a.i - b.i))
+      .map((x) => x.k);
+  }
+
+  // Drag to reorder, driven by pointer events so a finger works the same as a
+  // mouse — HTML5 drag-and-drop never fires on touch.
+  function makeSortable(container, itemSel, onDrop) {
+    container.addEventListener("pointerdown", (e) => {
+      const handle = e.target.closest(".drag-handle");
+      if (!handle || !container.contains(handle)) return;
+      const item = handle.closest(itemSel);
+      if (!item || item.parentElement !== container) return;
+      e.preventDefault();
+      item.classList.add("dragging");
+      handle.setPointerCapture(e.pointerId);
+
+      const move = (ev) => {
+        const others = [...container.children].filter((c) => c.matches(itemSel) && c !== item);
+        // drop above the first sibling whose middle the pointer has passed
+        const before = others.find((sib) => {
+          const box = sib.getBoundingClientRect();
+          return ev.clientY < box.top + box.height / 2;
+        });
+        if (before) { if (before !== item.nextSibling) container.insertBefore(item, before); }
+        else if (container.lastElementChild !== item) container.append(item);
+      };
+      const end = () => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", end);
+        handle.removeEventListener("pointercancel", end);
+        item.classList.remove("dragging");
+        onDrop([...container.children].filter((c) => c.matches(itemSel)).map((c) => c.dataset.sortKey));
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+    });
+  }
+
   async function renderDisburse() {
     const root = $("#view-root");
     root.innerHTML = '<div class="loading">Loading items to disburse…</div>';
@@ -4503,9 +4564,13 @@
         } awaiting payment.</span>
         <span class="spacer"></span>
         <button class="btn btn-ghost btn-sm" id="print-all">🖨️ Print all pending payments</button>
-      </div>`;
+      </div>
+      <p class="hint" style="margin:-8px 0 14px">⠿ Drag a payee to set which one is paid first — the order carries into the printed instruction sheet.</p>
+      <div id="dis-groups">`;
 
-    for (const uid of Object.keys(groups)) {
+    const payRank = loadPayOrder();
+    const liveKeys = [];
+    for (const uid of byPayOrder(Object.keys(groups), payRank)) {
       const p = profMap[uid] || {};
       const name = p.full_name || p.email || "Unknown user";
       const groupItems = groups[uid];
@@ -4558,11 +4623,13 @@
         dests[key].items.push(it);
       });
 
-      const destHtml = Object.keys(dests)
+      const destHtml = byPayOrder(Object.keys(dests), payRank)
         .map((dk) => {
           const d = dests[dk];
           destList.push({ uid, items: d.items, label: d.label, bank: d.bank, acct: d.acct, holder: d.holder });
           const di = destList.length - 1;
+          const destSortKey = "d:" + uid + "|" + dk;
+          liveKeys.push(destSortKey);
 
           const dTotalStr = destTotalHtml(d.items);
           const acctLine = d.acct
@@ -4598,11 +4665,14 @@
             .join("");
 
           return `
-            <div class="dest-sec">
+            <div class="dest-sec" data-di="${di}" data-sort-key="${esc(destSortKey)}">
               <div class="dest-head">
-                <div>
-                  <div class="dest-name">${esc(d.label)}</div>
-                  <div class="dest-bank">${acctLine}</div>
+                <div class="drag-row">
+                  <span class="drag-handle" title="Drag to change the payment order">⠿</span>
+                  <div>
+                    <div class="dest-name"><span class="pay-order"></span>${esc(d.label)}</div>
+                    <div class="dest-bank">${acctLine}</div>
+                  </div>
                 </div>
                 <div class="dest-actions">
                   <span class="dest-total" data-di="${di}">${dTotalStr}</span>
@@ -4623,11 +4693,14 @@
         .join("");
 
       html += `
-        <div class="card panel disburse-group">
+        <div class="card panel disburse-group" data-sort-key="u:${uid}">
           <div class="dg-head">
-            <div>
-              <div class="dg-user">${esc(name)}</div>
-              ${bankLine}
+            <div class="drag-row">
+              <span class="drag-handle" title="Drag to change the payment order">⠿</span>
+              <div>
+                <div class="dg-user">${esc(name)}</div>
+                ${bankLine}
+              </div>
             </div>
             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
               <div class="dg-total"><div class="lbl">To pay</div><div class="val">${totalStr}</div></div>
@@ -4645,9 +4718,28 @@
           </div>
           ${destHtml}
         </div>`;
+      liveKeys.push("u:" + uid);
     }
+    html += "</div>";
 
     root.innerHTML = html;
+
+    // ---- payment order: drag to rearrange, numbered to match the print ----
+    const renumber = () => {
+      $$(".dest-sec", root).forEach((secEl, i) => {
+        const badge = secEl.querySelector(".pay-order");
+        if (badge) badge.textContent = i + 1;
+      });
+    };
+    renumber();
+    const rememberOrder = (keys) => { savePayOrder(keys, liveKeys); renumber(); };
+    makeSortable($("#dis-groups", root), ".disburse-group", rememberOrder);
+    $$(".disburse-group", root).forEach((cardEl) =>
+      makeSortable(cardEl, ".dest-sec", rememberOrder)
+    );
+    // the printed sheet follows what is on screen, including a drag just made
+    const orderedDests = () =>
+      $$(".dest-sec", root).map((secEl) => destList[Number(secEl.dataset.di)]).filter(Boolean);
 
     // row click -> detail modal (ignore the pay button and the checkbox)
     $$("tbody tr", root).forEach((tr) => {
@@ -4666,7 +4758,7 @@
       })
     );
     // one sheet for the whole payment run
-    $("#print-all")?.addEventListener("click", () => printAllDisbursements(destList, profMap));
+    $("#print-all")?.addEventListener("click", () => printAllDisbursements(orderedDests(), profMap));
 
     // print buttons (one printable payout sheet per employee)
     $$(".print-group", root).forEach((b) =>

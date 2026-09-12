@@ -481,3 +481,21 @@ tbody tr:hover { background: #fafcfb; cursor: pointer; }
 }
 .config-warn code { background: #f0f4f1; padding: 2px 6px; border-radius: 5px; font-size: 13px; }
 .loading { text-align:center; padding: 60px; color: var(--muted); }
+
+/* ---- Disburse: drag to set which payee is paid first ---------------------- */
+.drag-row { display: flex; align-items: flex-start; gap: 10px; }
+.drag-handle {
+  cursor: grab; touch-action: none; user-select: none; flex: none;
+  color: var(--muted); font-size: 17px; line-height: 1.2;
+  padding: 3px 4px; border-radius: 6px;
+}
+.drag-handle:hover { background: #eef2ef; color: var(--ink); }
+.drag-handle:active { cursor: grabbing; }
+.disburse-group.dragging, .dest-sec.dragging { opacity: .65; outline: 2px dashed var(--green-600); }
+.pay-order {
+  display: inline-block; min-width: 20px; height: 20px; line-height: 20px;
+  text-align: center; padding: 0 5px; margin-right: 7px;
+  background: var(--green-700); color: #fff; border-radius: 999px;
+  font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums;
+}
+.pay-order:empty { display: none; }
