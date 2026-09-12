@@ -41,7 +41,10 @@
       "Bash(unzip -o ../gs.xlsx)",
       "Bash(ruby -e 'puts File.read\\(\"xl/workbook.xml\"\\)[0,1200]')",
       "Bash(ruby -e ' *)",
-      "WebFetch(domain:motolog.app)"
+      "WebFetch(domain:motolog.app)",
+      "Bash(rm -f _reprice-test.js)",
+      "Bash(ruby -E utf-8:utf-8 -e 's=File.read\\(\"index.html\",encoding:\"utf-8\"\\); File.write\\(\"index.html\", s.gsub\\(\"?v=49\",\"?v=50\"\\)\\)')",
+      "Bash(git commit -q -m ' *)"
     ]
   }
 }
