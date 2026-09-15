@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GS Operational System</title>
-  <link rel="stylesheet" href="styles.css?v=55" />
+  <link rel="stylesheet" href="styles.css?v=56" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛳</text></svg>" />
 </head>
 <body>
@@ -33,6 +33,38 @@
           <input type="password" name="password" autocomplete="current-password" required />
         </label>
         <button type="submit" class="btn btn-primary btn-block">Log in</button>
+        <button type="button" class="link-btn" id="forgot-link">Forgot password?</button>
+      </form>
+
+      <!-- forgot password: request a reset link by email -->
+      <form id="forgot-form" class="auth-form hidden">
+        <div>
+          <h2 class="auth-h">Reset your password</h2>
+          <p class="hint">Enter the email you log in with and we'll send a link to choose a new password.</p>
+        </div>
+        <label>Email
+          <input type="email" name="email" autocomplete="email" required />
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Send reset link</button>
+        <button type="button" class="link-btn back-to-login">← Back to log in</button>
+        <p class="hint auth-note">Not sure which email you signed up with? Ask an admin — they can find your account in Users &amp; Access and send the link for you.</p>
+      </form>
+
+      <!-- reached from the email link: choose a new password -->
+      <form id="reset-form" class="auth-form hidden">
+        <div>
+          <h2 class="auth-h">Choose a new password</h2>
+          <p class="hint" id="reset-for"></p>
+        </div>
+        <label>New password
+          <input type="password" name="password" autocomplete="new-password" minlength="6" required />
+          <small class="hint">At least 6 characters.</small>
+        </label>
+        <label>Confirm new password
+          <input type="password" name="confirm" autocomplete="new-password" minlength="6" required />
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Save new password</button>
+        <button type="button" class="link-btn" id="reset-cancel">Cancel and log out</button>
       </form>
 
       <!-- register -->
@@ -119,7 +151,7 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="config.js?v=55"></script>
-  <script src="app.js?v=55"></script>
+  <script src="config.js?v=56"></script>
+  <script src="app.js?v=56"></script>
 </body>
 </html>

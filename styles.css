@@ -499,3 +499,12 @@ tbody tr:hover { background: #fafcfb; cursor: pointer; }
   font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums;
 }
 .pay-order:empty { display: none; }
+
+/* ---- forgot / reset password ---------------------------------------------- */
+.link-btn {
+  background: none; border: 0; padding: 2px 0; font: inherit; font-size: 13px; font-weight: 600;
+  color: var(--green-600); cursor: pointer; justify-self: center;
+}
+.link-btn:hover { text-decoration: underline; text-underline-offset: 3px; }
+.auth-h { font-size: 17px; margin: 18px 0 4px; }
+.auth-note { text-align: center; line-height: 1.5; }

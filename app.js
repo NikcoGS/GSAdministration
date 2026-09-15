@@ -26,12 +26,31 @@
     return;
   }
 
+  // ---- Read an auth redirect before the client consumes it ----------------
+  // A password-reset email link lands here with "type=recovery" in the URL.
+  // The Supabase client takes the tokens and clears the address bar as it
+  // starts, so note what kind of visit this is first: a reset link must lead
+  // to "choose a new password", never straight into the app.
+  const authParams = new URLSearchParams(
+    (location.hash || "").replace(/^#/, "") + "&" + (location.search || "").replace(/^\?/, "")
+  );
+  const RECOVERY_FLAG = "gs-recovering";
+  const arrivedForRecovery = authParams.get("type") === "recovery";
+  const authLinkError = authParams.get("error_description") || authParams.get("error_code") || "";
+  try { if (arrivedForRecovery) sessionStorage.setItem(RECOVERY_FLAG, "1"); } catch (_e) { /* private mode */ }
+  const recoveryPending = () => {
+    try { return arrivedForRecovery || sessionStorage.getItem(RECOVERY_FLAG) === "1"; } catch (_e) { return arrivedForRecovery; }
+  };
+  const endRecovery = () => { try { sessionStorage.removeItem(RECOVERY_FLAG); } catch (_e) { /* ignore */ } };
+
   const sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
 
   // ---- App state -----------------------------------------------------------
   const state = {
     user: null,        // supabase auth user
     profile: null,     // { id, full_name, role, ... }
+    // signed in by a reset link, new password not chosen yet (survives a reload)
+    recovering: recoveryPending(),
     adminFilter: "pending",
     adminModule: "payment", // "payment" | "trip" | "petty"
     users: null,            // cached user_directory rows
@@ -158,16 +177,98 @@
     m.className = "msg " + kind;
   }
 
-  // tab switching
-  $$(".tab").forEach((tab) =>
-    tab.addEventListener("click", () => {
-      $$(".tab").forEach((t) => t.classList.toggle("active", t === tab));
-      const isLogin = tab.dataset.tab === "login";
-      $("#login-form").classList.toggle("hidden", !isLogin);
-      $("#register-form").classList.toggle("hidden", isLogin);
-      setAuthMsg("");
-    })
-  );
+  // which panel the auth card shows: login | register | forgot | reset
+  function showAuthPanel(name) {
+    const tabbed = name === "login" || name === "register";
+    $(".tabs").classList.toggle("hidden", !tabbed);
+    $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+    $("#login-form").classList.toggle("hidden", name !== "login");
+    $("#register-form").classList.toggle("hidden", name !== "register");
+    $("#forgot-form").classList.toggle("hidden", name !== "forgot");
+    $("#reset-form").classList.toggle("hidden", name !== "reset");
+    setAuthMsg("");
+  }
+
+  $$(".tab").forEach((tab) => tab.addEventListener("click", () => showAuthPanel(tab.dataset.tab)));
+
+  // ---- forgotten password ----------------------------------------------------
+  $("#forgot-link").addEventListener("click", () => {
+    const typed = $("#login-form").email.value.trim();
+    showAuthPanel("forgot");
+    if (typed) $("#forgot-form").email.value = typed;
+    $("#forgot-form").email.focus();
+  });
+  $$(".back-to-login").forEach((b) => b.addEventListener("click", () => showAuthPanel("login")));
+
+  // The link in the email brings people back to this same page. Supabase only
+  // honours it if the address is listed under Authentication → URL Configuration.
+  const appUrl = () => location.origin + location.pathname;
+
+  async function sendResetLink(email) {
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: appUrl() });
+    if (!error) return null;
+    if (/rate limit|too many|security purposes/i.test(error.message)) {
+      return "Too many reset emails have been sent recently. Wait a few minutes and try again.";
+    }
+    return error.message;
+  }
+
+  $("#forgot-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const btn = f.querySelector("button[type=submit]");
+    const email = f.email.value.trim();
+    btn.disabled = true;
+    setAuthMsg("Sending…");
+    const problem = await sendResetLink(email);
+    btn.disabled = false;
+    if (problem) { setAuthMsg(problem, "error"); return; }
+    // the same answer whether or not the address has an account, so this form
+    // can't be used to find out who has one
+    setAuthMsg(
+      `If ${email} has an account, a reset link is on its way. Check the inbox and spam folder — the link works once and expires after an hour.`,
+      "ok"
+    );
+  });
+
+  $("#reset-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const btn = f.querySelector("button[type=submit]");
+    if (f.password.value.length < 6) { setAuthMsg("Use at least 6 characters.", "error"); return; }
+    if (f.password.value !== f.confirm.value) { setAuthMsg("The two passwords don't match.", "error"); return; }
+    btn.disabled = true;
+    setAuthMsg("Saving…");
+    const { error } = await sb.auth.updateUser({ password: f.password.value });
+    btn.disabled = false;
+    if (error) {
+      if (/session|jwt|expired|not authenticated/i.test(error.message)) {
+        state.recovering = false;
+        endRecovery();
+        showAuthPanel("forgot");
+        setAuthMsg("This reset link has expired — request a new one below.", "error");
+      } else if (/different from the old/i.test(error.message)) {
+        setAuthMsg("That is your current password — choose a different one.", "error");
+      } else {
+        setAuthMsg(error.message, "error");
+      }
+      return;
+    }
+    state.recovering = false;
+    endRecovery();
+    f.reset();
+    history.replaceState(null, "", location.pathname + "#dashboard");
+    const { data } = await sb.auth.getSession();
+    await handleSession(data.session);
+    toast("Password changed — you're logged in ✔");
+  });
+
+  $("#reset-cancel").addEventListener("click", async () => {
+    state.recovering = false;
+    endRecovery();
+    await sb.auth.signOut();
+    showAuthPanel("login");
+  });
 
   $("#login-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -210,11 +311,35 @@
   });
 
   // React to auth changes
-  sb.auth.onAuthStateChange((_event, session) => {
+  sb.auth.onAuthStateChange((event, session) => {
+    if (event === "PASSWORD_RECOVERY") {
+      state.recovering = true;
+      try { sessionStorage.setItem(RECOVERY_FLAG, "1"); } catch (_e) { /* private mode */ }
+    }
     handleSession(session);
   });
 
   async function handleSession(session) {
+    // Signed in by a reset link. The link proves the person owns the inbox, but
+    // they still don't know a password — hold them on "choose a new password"
+    // until one is saved, rather than dropping them into the app.
+    if (state.recovering) {
+      if (session && session.user) {
+        state.user = session.user;
+        showAuth();
+        showAuthPanel("reset");
+        $("#reset-for").textContent = `For ${session.user.email}. You'll be logged in once it's saved.`;
+      } else {
+        // the link was invalid, expired or already used — nothing signed in
+        state.recovering = false;
+        endRecovery();
+        state.user = null;
+        showAuth();
+        showAuthPanel("forgot");
+        setAuthMsg("That reset link has expired or was already used — request a new one below.", "error");
+      }
+      return;
+    }
     if (session && session.user) {
       state.user = session.user;
       await loadProfile();
@@ -5108,6 +5233,11 @@
               custom && perms.length === 0 ? '<b style="color:var(--red)">no access</b>' : custom ? "custom" : "role default"
             }</span>
             ${
+              u.email
+                ? `<button class="btn btn-ghost btn-sm send-reset" data-email="${esc(u.email)}" style="margin-left:6px" title="Email this person a link to choose a new password">🔑 Reset link</button>`
+                : ""
+            }
+            ${
               isSelf
                 ? ""
                 : `<button class="btn btn-ghost btn-sm grant-default" data-uid="${u.id}" style="margin-left:6px">Employee set</button>
@@ -5149,6 +5279,21 @@
     };
 
     $$(".perm", root).forEach((c) => c.addEventListener("change", () => savePerms(c.dataset.uid)));
+
+    // someone who forgot their password (or which email they used) asks an
+    // admin: find them here and send the link to the address on file
+    $$(".send-reset", root).forEach((b) =>
+      b.addEventListener("click", async () => {
+        const email = b.dataset.email;
+        if (!confirm(`Send a password reset link to ${email}?`)) return;
+        b.disabled = true;
+        const problem = await sendResetLink(email);
+        b.disabled = false;
+        if (problem) { msg.textContent = problem; msg.className = "msg error"; return; }
+        msg.textContent = `Reset link sent to ${email} ✔`;
+        msg.className = "msg ok";
+      })
+    );
 
     // back to "everything their role allows"
     $$(".reset-default", root).forEach((b) =>
@@ -5251,7 +5396,7 @@
   // ==========================================================================
   let accessSignature = null;
   async function refreshAccess() {
-    if (!state.user) return;
+    if (!state.user || state.recovering) return;
     const { data, error } = await sb
       .from("profiles")
       .select("id,full_name,email,role,permissions,bank_name,bank_account_number,bank_account_name")
@@ -5282,6 +5427,12 @@
   (async function boot() {
     const { data } = await sb.auth.getSession();
     await handleSession(data.session);
+    // an expired or reused link comes back with an error instead of tokens
+    if (authLinkError && !data.session) {
+      history.replaceState(null, "", location.pathname);
+      showAuthPanel("forgot");
+      setAuthMsg("That reset link has expired or was already used — request a new one below.", "error");
+    }
     watchAccess();
   })();
 })();
