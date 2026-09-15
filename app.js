@@ -3704,6 +3704,18 @@
   }
   const isPartiallyPaid = (r) => paidSoFar(r) > 0 && !r.paid_at;
 
+  // IDR value of what is still OWED, not of the whole invoice. idrValue() is the
+  // right figure for the purchasing book, but anything totalling money waiting
+  // to be paid must take off the part already paid — otherwise a half-paid
+  // invoice counts twice: once in the transfer already made, and again here.
+  function idrOutstanding(type, r) {
+    const full = idrValue(type, r);
+    if (full == null) return null;
+    const total = Number(TYPES[type].amount(r) || 0);
+    if (!(total > 0)) return full;
+    return Math.round(full * (remainingOf(type, r) / total) * 100) / 100;
+  }
+
   async function openDetail(r, isAdmin, nameMap = {}, type = "payment", opts = {}) {
     const requester = nameMap[r.requester_id] || (r.requester_id === state.user.id ? "You" : "—");
     let rows, files;
@@ -4560,7 +4572,7 @@
       const c = TYPES[it.type].currency(it.r) || "IDR";
       totals[c] = (totals[c] || 0) + remainingOf(it.type, it.r);
       if (c !== "IDR") foreign = true;
-      const v = idrValue(it.type, it.r);
+      const v = idrOutstanding(it.type, it.r);
       if (v == null) unknown = true; else idr += v;
     });
     if (!items.length) return '<span class="fx-hint">nothing selected</span>';
@@ -4716,7 +4728,7 @@
         const amt = remainingOf(it.type, it.r);
         totals[cur] = (totals[cur] || 0) + amt;
         if (cur !== "IDR") gForeign = true;
-        const v = idrValue(it.type, it.r);
+        const v = idrOutstanding(it.type, it.r);
         if (v == null) gUnknown = true; else gIdr += v;
       });
       const totalStr =
@@ -4767,7 +4779,7 @@
               const cur = TYPES[type].currency(r) || "IDR";
               const partial = isPartiallyPaid(r);
               const amt = partial ? remainingOf(type, r) : TYPES[type].amount(r);
-              const idrEq = idrValue(type, r);
+              const idrEq = idrOutstanding(type, r);
               return `
                 <tr data-type="${type}" data-id="${r.id}">
                   <td><input type="checkbox" class="sel-dest" data-di="${di}" data-i="${i}"
@@ -4990,7 +5002,12 @@
               <td>${esc(who)}</td>
               <td class="r">${
                 TYPES[it.type].amount(it.r) != null
-                  ? esc(money(TYPES[it.type].amount(it.r), TYPES[it.type].currency(it.r)))
+                  ? esc(money(remainingOf(it.type, it.r), TYPES[it.type].currency(it.r))) +
+                    (isPartiallyPaid(it.r)
+                      ? `<div class="part">part-paid — ${esc(money(paidSoFar(it.r), TYPES[it.type].currency(it.r)))} of ${esc(
+                          money(TYPES[it.type].amount(it.r), TYPES[it.type].currency(it.r))
+                        )} already sent</div>`
+                      : "")
                   : "—"
               }</td>
             </tr>`
@@ -5041,6 +5058,7 @@
         th, td { text-align:left; padding:7px 10px; border-bottom:1px solid #eef2ef; }
         th { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:#5f6f68; }
         td.r, th.r { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+        td .part { font-size:10px; color:#8a5a12; white-space:normal; margin-top:2px; }
         tbody tr:last-child td { border-bottom:0; }
         .grand { display:flex; justify-content:space-between; align-items:baseline; border-top:3px solid #157347; margin-top:18px; padding-top:12px; font-size:16px; }
         .grand .v { font-size:20px; font-weight:800; color:#0f5132; font-variant-numeric:tabular-nums; }
@@ -5093,7 +5111,8 @@
     const rowsHtml = groupItems
       .map((it, i) => {
         const { type, r } = it;
-        const amt = TYPES[type].amount(r);
+        // what is still owed — a part-paid invoice must not print its full value
+        const amt = TYPES[type].amount(r) != null ? remainingOf(type, r) : null;
         let payTo;
         if (type === "payment") {
           payTo = r.bank_account_number
@@ -5107,7 +5126,11 @@
             <td>${esc(TYPES[type].label)}</td>
             <td>${esc(TYPES[type].title(r))}</td>
             <td>${esc(fmtDate(r.reviewed_at))}</td>
-            <td class="r">${amt != null ? esc(money(amt, TYPES[type].currency(r))) : "—"}</td>
+            <td class="r">${amt != null ? esc(money(amt, TYPES[type].currency(r))) : "—"}${
+              isPartiallyPaid(r)
+                ? `<div class="part">part-paid — ${esc(money(paidSoFar(r), TYPES[type].currency(r)))} of ${esc(money(TYPES[type].amount(r), TYPES[type].currency(r)))} already sent</div>`
+                : ""
+            }</td>
             <td>${esc(payTo)}</td>
           </tr>`;
       })
@@ -5134,6 +5157,7 @@
         th, td { text-align:left; padding:9px 10px; border-bottom:1px solid #e2e8e4; vertical-align:top; }
         th { background:#f4f7f5; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#5f6f68; }
         td.r, th.r { text-align:right; font-variant-numeric: tabular-nums; white-space:nowrap; }
+        td .part { font-size:10px; color:#8a5a12; white-space:normal; margin-top:2px; }
         .total { display:flex; justify-content:flex-end; gap:24px; align-items:baseline; margin-top:16px; font-size:16px; }
         .total .val { font-size:20px; font-weight:800; color:#0f5132; font-variant-numeric: tabular-nums; }
         .note { margin-top:22px; font-size:12.5px; color:#35443c; }
