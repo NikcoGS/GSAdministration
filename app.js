@@ -52,6 +52,11 @@
     // signed in by a reset link, new password not chosen yet (survives a reload)
     recovering: recoveryPending(),
     adminFilter: "pending",
+    adminSort: {},            // per module: { key, dir }
+    adminSearch: "",
+    adminWho: "",             // requester id
+    adminFrom: "",
+    adminTo: "",
     adminModule: "payment", // "payment" | "trip" | "petty"
     users: null,            // cached user_directory rows
     recvFilter: "assigned", // "assigned" | "mine" | "all"
@@ -3376,6 +3381,64 @@
   // ==========================================================================
   //  VIEW: ADMIN
   // ==========================================================================
+  // What each Admin Approvals module can be sorted, searched and dated by.
+  // Accessors take (row, nameMap) so the requester reads like a column of the
+  // table even though the name lives in another one.
+  const who = (r, n) => (n[r.requester_id] || "").toLowerCase();
+  const num = (v) => (v == null || v === "" || Number.isNaN(Number(v)) ? -1 : Number(v));
+  const ADMIN_COLS = {
+    payment: {
+      date: (r) => r.transaction_date || r.created_at || "",
+      dateLabel: "Transfer date",
+      placeholder: "Search title, payee, invoice no, item…",
+      sorts: {
+        requester: who,
+        title: (r) => (r.title || "").toLowerCase(),
+        payee: (r) => (r.payee_name || "").toLowerCase(),
+        // sort by one currency so foreign and rupiah invoices can be compared
+        amount: (r) => { const v = idrValue("payment", r); return v == null ? -1 : v; },
+        date: (r) => r.transaction_date || r.created_at || "",
+        status: (r) => r.status || "",
+      },
+      search: (r, n) => [
+        n[r.requester_id], r.title, r.payee_name, r.ref_number, r.buyer, r.description, r.bank_name,
+        ...(Array.isArray(r.items) ? r.items.map((i) => `${i.item_name} ${i.item_code || ""}`) : []),
+      ].join(" "),
+    },
+    trip: {
+      date: (r) => r.trip_date || r.created_at || "",
+      dateLabel: "Trip date",
+      placeholder: "Search purpose, claimant, vehicle…",
+      sorts: {
+        requester: who,
+        purpose: (r) => (r.trip_purpose || "").toLowerCase(),
+        vehicle: (r) => (r.vehicle_option || "").toLowerCase(),
+        km: (r) => num(r.total_km),
+        amount: (r) => num(r.amount),
+        date: (r) => r.trip_date || r.created_at || "",
+        status: (r) => r.status || "",
+      },
+      search: (r, n) => [
+        n[r.requester_id], r.claimant_name, r.trip_purpose, r.vehicle_option,
+        (r.claim_items || []).join(" "), r.claim_items_other,
+      ].join(" "),
+    },
+    petty: {
+      date: (r) => r.claim_date || r.created_at || "",
+      dateLabel: "Claim date",
+      placeholder: "Search title or claimant…",
+      sorts: {
+        requester: who,
+        title: (r) => (r.title || "").toLowerCase(),
+        date: (r) => r.claim_date || r.created_at || "",
+        amount: (r) => num(r.total_amount),
+        status: (r) => r.status || "",
+      },
+      search: (r, n) => [n[r.requester_id], r.title].join(" "),
+    },
+  };
+  const DEFAULT_ADMIN_SORT = { key: "date", dir: "desc" };
+
   async function renderAdmin() {
     const root = $("#view-root");
     const mod = state.adminModule;
@@ -3390,10 +3453,11 @@
 
     // approved/all tabs: split into "not yet paid" + payment batches
     const showBatches = state.adminFilter === "approved" || state.adminFilter === "all";
-    const paidRows = showBatches ? data.filter((r) => r.paid_at) : [];
-    const unpaidRows = showBatches ? data.filter((r) => !r.paid_at) : data;
 
-    const batchIds = [...new Set(paidRows.map((r) => r.batch_id).filter(Boolean))];
+    // Batches and names are read from everything fetched, not from what the
+    // filters leave on screen, so the requester list stays complete and a
+    // batch heading still knows who made the payment.
+    const batchIds = [...new Set(data.filter((r) => r.paid_at).map((r) => r.batch_id).filter(Boolean))];
     const batchMap = {};
     if (batchIds.length) {
       const { data: batches } = await sb.from("disbursement_batches").select("*").in("id", batchIds);
@@ -3404,15 +3468,41 @@
     const ids = [
       ...new Set([
         ...data.map((r) => r.requester_id),
-        ...paidRows.map((r) => r.paid_by).filter(Boolean),
+        ...data.map((r) => r.paid_by).filter(Boolean),
         ...Object.values(batchMap).map((bt) => bt.created_by),
       ]),
-    ];
+    ].filter(Boolean);
     const nameMap = {};
     if (ids.length) {
       const { data: profs } = await sb.from("profiles").select("id,full_name,email").in("id", ids);
       (profs || []).forEach((p) => (nameMap[p.id] = p.full_name || p.email));
     }
+
+    // ---- search, requester and date filters, then the chosen sort ---------
+    const cols = ADMIN_COLS[mod];
+    const q = (state.adminSearch || "").trim().toLowerCase();
+    const matches = (r) => {
+      if (state.adminWho && r.requester_id !== state.adminWho) return false;
+      const d = String(cols.date(r) || "").slice(0, 10);
+      if (state.adminFrom && d < state.adminFrom) return false;
+      if (state.adminTo && d > state.adminTo) return false;
+      if (!q) return true;
+      return cols.search(r, nameMap).toLowerCase().includes(q);
+    };
+    const shown = data.filter(matches);
+
+    const sort = state.adminSort[mod] || DEFAULT_ADMIN_SORT;
+    const sortVal = cols.sorts[sort.key] || cols.sorts.date;
+    const sortDir = sort.dir === "asc" ? 1 : -1;
+    shown.sort((a, b) => {
+      const va = sortVal(a, nameMap), vb = sortVal(b, nameMap);
+      if (va < vb) return -sortDir;
+      if (va > vb) return sortDir;
+      return 0;
+    });
+
+    const paidRows = showBatches ? shown.filter((r) => r.paid_at) : [];
+    const unpaidRows = showBatches ? shown.filter((r) => !r.paid_at) : shown;
 
     const seg = `
       <div class="seg">
@@ -3439,21 +3529,50 @@
           '<button class="btn btn-ghost btn-sm" id="export-purchasing">⬇️ Export for GS Purchasing</button>'
         : "");
 
+    const people = [...new Set(data.map((r) => r.requester_id).filter(Boolean))]
+      .map((id) => [id, nameMap[id] || "—"])
+      .sort((a, b) => a[1].localeCompare(b[1]));
+    const narrowed = state.adminSearch || state.adminWho || state.adminFrom || state.adminTo;
+    const filterBar = `
+      <div class="toolbar filters">
+        <input id="adm-search" placeholder="${esc(cols.placeholder)}" value="${esc(state.adminSearch || "")}"
+               style="max-width:300px" />
+        <select id="adm-who" title="Requester">
+          <option value="">Everyone</option>
+          ${people
+            .map(([id, n]) => `<option value="${id}"${state.adminWho === id ? " selected" : ""}>${esc(n)}</option>`)
+            .join("")}
+        </select>
+        <label class="daterange">${esc(cols.dateLabel)} from
+          <input type="date" id="adm-from" value="${esc(state.adminFrom || "")}" /></label>
+        <label class="daterange">to
+          <input type="date" id="adm-to" value="${esc(state.adminTo || "")}" /></label>
+        ${
+          narrowed
+            ? `<span class="fx-hint">${shown.length} of ${data.length}</span>
+               <button class="btn btn-ghost btn-sm" id="adm-clear">✕ Clear filters</button>`
+            : ""
+        }
+      </div>`;
+
     const tableFn = mod === "trip" ? tripsTable : mod === "petty" ? pettyTable : requestsTable;
+    const tOpts = { sort };
 
     let body;
-    if (!data.length) {
+    if (!shown.length) {
       body =
         '<div class="card panel empty"><div class="big">✅</div><h3>Nothing here</h3>' +
-        `<p class="sub">No ${state.adminFilter === "all" ? "" : state.adminFilter} items.</p></div>`;
+        `<p class="sub">${
+          narrowed ? "No items match these filters." : `No ${state.adminFilter === "all" ? "" : state.adminFilter} items.`
+        }</p></div>`;
     } else if (!showBatches) {
-      body = tableFn(data, true, nameMap, state.adminFilter === "pending");
+      body = tableFn(shown, true, nameMap, state.adminFilter === "pending", tOpts);
     } else {
       body = "";
       if (unpaidRows.length) {
         body +=
           `<details class="batch-sec" open><summary class="section-h">⏳ Not yet paid (${unpaidRows.length})</summary>` +
-          tableFn(unpaidRows, true, nameMap) +
+          tableFn(unpaidRows, true, nameMap, false, tOpts) +
           `</details>`;
       }
       // group paid items into payment batches (fallback: identical paid_at = one payment)
@@ -3496,7 +3615,7 @@
 
         body +=
           `<details class="batch-sec"><summary class="section-h paid">💸 ${fmtDate(dayOf(k))} · <b>${esc(payeeStr)}</b> · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b>${batchMap[k]?.fees ? ` + ${money(batchMap[k].fees, batchMap[k].currency || "IDR")} fees` : ""} · <span class="fx-hint">by ${esc(nameMap[payer] || "—")}</span></summary>` +
-          tableFn(rows, true, nameMap) +
+          tableFn(rows, true, nameMap, false, tOpts) +
           `</details>`;
       }
     }
@@ -3508,7 +3627,7 @@
         <button class="btn btn-danger btn-sm" id="bulk-reject">✕ Reject selected</button>
       </div>`;
 
-    root.innerHTML = seg + `<div class="toolbar">${pills}</div>` + bulkBar + body;
+    root.innerHTML = seg + `<div class="toolbar">${pills}</div>` + filterBar + bulkBar + body;
 
     $$(".seg button").forEach((b) =>
       b.addEventListener("click", () => {
@@ -3522,7 +3641,39 @@
         renderAdmin();
       })
     );
-    wireRowClicks(root, data, true, nameMap, mod);
+    // sorting: same column flips direction, a new one starts the way people
+    // expect to read it — newest and largest first, names A–Z
+    $$("th.sortable", root).forEach((h) =>
+      h.addEventListener("click", () => {
+        const key = h.dataset.sort;
+        state.adminSort[mod] =
+          sort.key === key
+            ? { key, dir: sort.dir === "asc" ? "desc" : "asc" }
+            : { key, dir: ["date", "amount", "km"].includes(key) ? "desc" : "asc" };
+        renderAdmin();
+      })
+    );
+    const search = $("#adm-search", root);
+    let typing;
+    search?.addEventListener("input", () => {
+      clearTimeout(typing);
+      typing = setTimeout(async () => {
+        state.adminSearch = search.value;
+        await renderAdmin();
+        const again = $("#adm-search");
+        if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+      }, 250);
+    });
+    const onFilter = (id, prop) =>
+      $("#" + id, root)?.addEventListener("change", (e) => { state[prop] = e.target.value; renderAdmin(); });
+    onFilter("adm-who", "adminWho");
+    onFilter("adm-from", "adminFrom");
+    onFilter("adm-to", "adminTo");
+    $("#adm-clear", root)?.addEventListener("click", () => {
+      state.adminSearch = state.adminWho = state.adminFrom = state.adminTo = "";
+      renderAdmin();
+    });
+    wireRowClicks(root, shown, true, nameMap, mod);
 
     // ---- multi-select approval ----
     const updateBulk = () => {
@@ -3575,12 +3726,26 @@
   const selTh = '<th style="width:34px"><input type="checkbox" class="sel-all" title="Select all" /></th>';
   const selTd = (r) => `<td><input type="checkbox" class="sel-row" data-id="${r.id}" ${r.status === "pending" ? "" : "disabled"} /></td>`;
 
-  function requestsTable(rows, isAdmin, nameMap = {}, selectable = false) {
+  // Header cells become clickable when the caller passes { sort } — Admin
+  // Approvals does, the other screens get the plain headers they had.
+  function thMaker(opts) {
+    const sort = opts && opts.sort;
+    return (key, label) => {
+      if (!sort) return `<th>${label}</th>`;
+      const on = sort.key === key;
+      return `<th class="sortable${on ? " sorted" : ""}" data-sort="${key}">${label}<span class="sort-caret">${
+        on ? (sort.dir === "asc" ? "▲" : "▼") : "↕"
+      }</span></th>`;
+    };
+  }
+
+  function requestsTable(rows, isAdmin, nameMap = {}, selectable = false, opts = {}) {
+    const th = thMaker(opts);
     const head = `
       <tr>
         ${selectable ? selTh : ""}
-        ${isAdmin ? "<th>Requester</th>" : ""}
-        <th>Title</th><th>Payee</th><th>Amount</th><th>Date</th><th>Status</th>
+        ${isAdmin ? th("requester", "Requester") : ""}
+        ${th("title", "Title")}${th("payee", "Payee")}${th("amount", "Amount")}${th("date", "Date")}${th("status", "Status")}
       </tr>`;
     const trs = rows
       .map(
@@ -3607,12 +3772,13 @@
     return `<div class="card table-wrap"><table><thead>${head}</thead><tbody>${trs}</tbody></table></div>`;
   }
 
-  function tripsTable(rows, isAdmin, nameMap = {}, selectable = false) {
+  function tripsTable(rows, isAdmin, nameMap = {}, selectable = false, opts = {}) {
+    const th = thMaker(opts);
     const head = `
       <tr>
         ${selectable ? selTh : ""}
-        ${isAdmin ? "<th>Requester</th>" : ""}
-        <th>Purpose</th><th>Vehicle</th><th>Km</th><th>Amount</th><th>Trip date</th><th>Status</th>
+        ${isAdmin ? th("requester", "Requester") : ""}
+        ${th("purpose", "Purpose")}${th("vehicle", "Vehicle")}${th("km", "Km")}${th("amount", "Amount")}${th("date", "Trip date")}${th("status", "Status")}
       </tr>`;
     const trs = rows
       .map(
@@ -3632,12 +3798,13 @@
     return `<div class="card table-wrap"><table><thead>${head}</thead><tbody>${trs}</tbody></table></div>`;
   }
 
-  function pettyTable(rows, isAdmin, nameMap = {}, selectable = false) {
+  function pettyTable(rows, isAdmin, nameMap = {}, selectable = false, opts = {}) {
+    const th = thMaker(opts);
     const head = `
       <tr>
         ${selectable ? selTh : ""}
-        ${isAdmin ? "<th>Requester</th>" : ""}
-        <th>Title</th><th>Claim date</th><th>Grand total</th><th>Status</th>
+        ${isAdmin ? th("requester", "Requester") : ""}
+        ${th("title", "Title")}${th("date", "Claim date")}${th("amount", "Grand total")}${th("status", "Status")}
       </tr>`;
     const trs = rows
       .map(
