@@ -3164,7 +3164,9 @@
         <form id="ed-form" style="margin-top:14px">
           <label class="ed-f" style="margin-bottom:10px">Purpose / Title
             <input name="title" value="${esc(r.title || "")}" required />
-            <small class="hint">This is the description shown in Disburse, Admin Approvals and My Requests.</small>
+            <small class="hint">This is the description shown in Disburse, Admin Approvals and My Requests.
+              <button type="button" class="link-btn" id="ed-title-match" hidden></button>
+            </small>
           </label>
           <div class="ed-grid">
             ${field("payee_name", isSupplier ? "Supplier" : "Payee / Vendor", r.payee_name)}
@@ -3207,6 +3209,41 @@
       </div>`);
 
     openModal(card);
+
+    // The title normally carries the supplier's name ("Supplier payment — X"),
+    // and it is the text every list shows, so correcting the supplier has to
+    // carry into it. Only the part matching the name it already had is
+    // rewritten — a title somebody wrote themselves is left alone.
+    const titleInput = card.querySelector("[name=title]");
+    const payeeInput = card.querySelector("[name=payee_name]");
+    const matchBtn = card.querySelector("#ed-title-match");
+    const derivedTitle = (payee) => `${isSupplier ? "Supplier payment" : "Payment"} — ${payee}`;
+    let appliedPayee = (r.payee_name || "").trim();
+
+    // offered when the title has drifted from the supplier — for records where
+    // the name was changed before the two were kept in step
+    const refreshMatchOffer = () => {
+      const payee = payeeInput.value.trim();
+      const stale = payee && !titleInput.value.includes(payee);
+      matchBtn.hidden = !stale;
+      if (stale) matchBtn.textContent = `Use “${derivedTitle(payee)}”`;
+    };
+    matchBtn.addEventListener("click", () => {
+      titleInput.value = derivedTitle(payeeInput.value.trim());
+      appliedPayee = payeeInput.value.trim();
+      refreshMatchOffer();
+    });
+    payeeInput.addEventListener("input", () => {
+      const next = payeeInput.value.trim();
+      if (next && appliedPayee && titleInput.value.includes(appliedPayee)) {
+        titleInput.value = titleInput.value.split(appliedPayee).join(next);
+        appliedPayee = next;
+      }
+      refreshMatchOffer();
+    });
+    titleInput.addEventListener("input", refreshMatchOffer);
+    refreshMatchOffer();
+
     const linesBox = card.querySelector("#ed-lines");
     const addLine = (it = {}) => {
       const row = el(`
