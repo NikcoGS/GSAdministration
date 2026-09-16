@@ -3162,6 +3162,10 @@
           <button class="btn btn-ghost btn-sm" data-close>✕</button>
         </div>
         <form id="ed-form" style="margin-top:14px">
+          <label class="ed-f" style="margin-bottom:10px">Purpose / Title
+            <input name="title" value="${esc(r.title || "")}" required />
+            <small class="hint">This is the description shown in Disburse, Admin Approvals and My Requests.</small>
+          </label>
           <div class="ed-grid">
             ${field("payee_name", isSupplier ? "Supplier" : "Payee / Vendor", r.payee_name)}
             ${field("ref_number", "PO / Invoice no", r.ref_number)}
@@ -3225,6 +3229,8 @@
       e.preventDefault();
       const msg = card.querySelector("#ed-msg");
       const val = (n) => card.querySelector(`[name=${n}]`).value.trim();
+      const title = val("title");
+      if (!title) { msg.textContent = "The purpose / title cannot be empty — it is what the lists show."; msg.className = "msg error"; return; }
       const payee = val("payee_name");
       if (!payee) { msg.textContent = "The supplier / payee name cannot be empty."; msg.className = "msg error"; return; }
       const amount = Number(val("amount"));
@@ -3249,6 +3255,7 @@
       }
 
       const patch = {
+        title,
         payee_name: payee,
         ref_number: val("ref_number") || null,
         invoice_date: val("invoice_date") || null,
