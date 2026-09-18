@@ -4026,8 +4026,10 @@
         ["Submitted", fmtDate(r.created_at)],
       );
       if (r.description) rows.push(["Notes", r.description]);
-      // hidePrices context (receiving): no invoice link — the invoice shows prices
-      files = opts.hidePrices ? [] : [{ label: "📎 View invoice / bill", bucket: "invoices", path: r.invoice_path }];
+      // The invoice is offered even where prices are hidden (receiving): the
+      // checker needs it to compare the goods against, and anyone who can open
+      // this purchase is its requester or already has view-all rights.
+      files = [{ label: "📎 View invoice / bill", bucket: "invoices", path: r.invoice_path }];
     }
 
     if (r.status !== "pending") {
@@ -4166,11 +4168,12 @@
     }
 
     // documents that live in Google Drive (historical imports)
-    if (type === "payment" && !opts.hidePrices) {
+    if (type === "payment") {
       const driveSlot = card.querySelector("#file-slot");
+      // payment proofs show what was paid, so they stay out of the prices-hidden view
       const driveDocs = [
         ...(Array.isArray(r.drive_invoice_files) ? r.drive_invoice_files.map((d) => ({ ...d, icon: "📄" })) : []),
-        ...(Array.isArray(r.drive_payment_files) ? r.drive_payment_files.map((d) => ({ ...d, icon: "🧾" })) : []),
+        ...(!opts.hidePrices && Array.isArray(r.drive_payment_files) ? r.drive_payment_files.map((d) => ({ ...d, icon: "🧾" })) : []),
       ];
       driveDocs.forEach((d) => {
         const label = d.name && d.name.length > 46 ? d.name.slice(0, 44) + "…" : d.name || "Document";
