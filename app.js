@@ -2084,11 +2084,47 @@
       </div>`);
     openModal(card);
 
-    // attachment
+    // Documents. The copy taken when the receiving was created is the one any
+    // signed-in checker can open; the invoices bucket itself is restricted to
+    // whoever filed the purchase and to reviewers. So the copy comes first,
+    // and the original is only reached for when there is no copy.
+    const docSlot = card.querySelector("#recv-attach");
+    const docChip = (label, href) =>
+      el(`<a class="btn btn-ghost btn-sm" href="${href}" target="_blank" rel="noopener">${esc(label)}</a>`);
+
     if (r.attachment_path) {
-      const slot = card.querySelector("#recv-attach");
       const { data } = await sb.storage.from("receiving-files").createSignedUrl(r.attachment_path, 300);
-      if (data) slot.innerHTML = `<a class="btn btn-ghost btn-sm" href="${data.signedUrl}" target="_blank" rel="noopener">📎 View PO / invoice</a>`;
+      if (data) docSlot.append(docChip("📎 View PO / invoice", data.signedUrl));
+    }
+
+    if (r.payment_request_id) {
+      const { data: pr } = await sb
+        .from("payment_requests").select("*").eq("id", r.payment_request_id).maybeSingle();
+      if (pr) {
+        if (!r.attachment_path && pr.invoice_path) {
+          const { data: iu } = await sb.storage.from("invoices").createSignedUrl(pr.invoice_path, 300);
+          if (iu) docSlot.append(docChip("🧾 View supplier invoice", iu.signedUrl));
+        }
+        (Array.isArray(pr.drive_invoice_files) ? pr.drive_invoice_files : []).forEach((d) => {
+          if (d && d.url) docSlot.append(docChip("📄 " + (d.name || "Invoice in Drive"), d.url));
+        });
+        const open = el('<button class="btn btn-ghost btn-sm">📦 View purchase details</button>');
+        // what was ordered is the checker's business; what it cost is not,
+        // unless they also work on the purchasing side
+        const seePrices = can("purchasing") || can("approval");
+        open.addEventListener("click", () =>
+          openDetail(pr, state.profile.role === "admin", {}, "payment", { hidePrices: !seePrices })
+        );
+        docSlot.append(open);
+      } else if (!r.attachment_path) {
+        docSlot.append(
+          el('<span class="hint">The purchase this came from is not visible to your account — ask an admin for a copy of the invoice.</span>')
+        );
+      }
+    }
+
+    if (!docSlot.children.length) {
+      docSlot.append(el('<span class="hint">No invoice or PO attached to this receiving.</span>'));
     }
 
     // lines
