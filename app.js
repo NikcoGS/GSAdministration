@@ -3637,6 +3637,7 @@
 
     const tableFn = mod === "trip" ? tripsTable : mod === "petty" ? pettyTable : requestsTable;
     const tOpts = { sort };
+    let printable = {};
 
     let body;
     if (!shown.length) {
@@ -3649,9 +3650,13 @@
       body = tableFn(shown, true, nameMap, state.adminFilter === "pending", tOpts);
     } else {
       body = "";
+      const printBtn = (key) =>
+        `<span class="spacer"></span><button class="btn btn-ghost btn-sm print-sec" data-sec="${esc(key)}" title="Print this section">🖨️ Print</button>`;
+      printable = {};
       if (unpaidRows.length) {
+        printable.unpaid = { rows: unpaidRows, batch: null };
         body +=
-          `<details class="batch-sec" open><summary class="section-h">⏳ Not yet paid (${unpaidRows.length})</summary>` +
+          `<details class="batch-sec" open><summary class="section-h">⏳ Not yet paid (${unpaidRows.length})${printBtn("unpaid")}</summary>` +
           tableFn(unpaidRows, true, nameMap, false, tOpts) +
           `</details>`;
       }
@@ -3693,8 +3698,9 @@
         const payeeStr =
           payees.slice(0, 2).join(", ") + (payees.length > 2 ? ` +${payees.length - 2} more` : "");
 
+        printable[k] = { rows, batch: batchMap[k] || null, payer, day: dayOf(k) };
         body +=
-          `<details class="batch-sec"><summary class="section-h paid">💸 ${fmtDate(dayOf(k))} · <b>${esc(payeeStr)}</b> · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b>${batchMap[k]?.fees ? ` + ${money(batchMap[k].fees, batchMap[k].currency || "IDR")} fees` : ""} · <span class="fx-hint">by ${esc(nameMap[payer] || "—")}</span></summary>` +
+          `<details class="batch-sec"><summary class="section-h paid">💸 ${fmtDate(dayOf(k))} · <b>${esc(payeeStr)}</b> · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${totalStr}</b>${batchMap[k]?.fees ? ` + ${money(batchMap[k].fees, batchMap[k].currency || "IDR")} fees` : ""} · <span class="fx-hint">by ${esc(nameMap[payer] || "—")}</span>${printBtn(k)}</summary>` +
           tableFn(rows, true, nameMap, false, tOpts) +
           `</details>`;
       }
@@ -3754,6 +3760,15 @@
       renderAdmin();
     });
     wireRowClicks(root, shown, true, nameMap, mod);
+    // a button inside <summary> would also toggle the section — stop that
+    $$(".print-sec", root).forEach((b) =>
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const sec = printable[b.dataset.sec];
+        if (sec) printApprovalSection(mod, sec, nameMap);
+      })
+    );
 
     // ---- multi-select approval ----
     const updateBulk = () => {
@@ -5438,6 +5453,133 @@
       <div class="sign">
         <div class="box"><div class="line">Prepared by${preparedBy ? " — " + esc(preparedBy) : ""}</div></div>
         <div class="box"><div class="line">Transferred by</div></div>
+      </div>
+      <script>window.addEventListener('load',function(){setTimeout(function(){window.print();},250);});<\/script>
+      </body></html>`;
+
+    const w = window.open("", "_blank");
+    if (!w) { toast("Allow pop-ups for this site to print", "error"); return; }
+    w.document.open();
+    w.document.write(doc);
+    w.document.close();
+  }
+
+  // --------------------------------------------------------------------------
+  //  Admin Approvals: one printable sheet per section — a payment batch (the
+  //  transfer and everything it settled) or the items approved but not yet
+  //  paid. Same paper as the disbursement sheets so the team reads them alike.
+  // --------------------------------------------------------------------------
+  function printApprovalSection(mod, sec, nameMap) {
+    const { rows, batch } = sec;
+    const T = TYPES[mod];
+    const company = cfg.COMPANY_NAME || "Company";
+    const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
+    const preparedBy = state.profile.full_name || state.profile.email || "";
+    const isPaid = !!batch || rows.every((r) => r.paid_at);
+    const docTitle = isPaid ? "Payment record" : "Approved — awaiting payment";
+    const dateOf = (r) =>
+      mod === "trip" ? r.trip_date || r.created_at : mod === "petty" ? r.claim_date || r.created_at : r.transaction_date || r.created_at;
+
+    // per row: what is owed on an unpaid item, what the invoice was on a paid one
+    const amountCell = (r) => {
+      const cur = T.currency(r) || "IDR";
+      if (!isPaid) {
+        const owed = remainingOf(mod, r);
+        return esc(money(owed, cur)) + (isPartiallyPaid(r)
+          ? `<div class="part">part-paid — ${esc(money(paidSoFar(r), cur))} of ${esc(money(T.amount(r), cur))} already sent</div>` : "");
+      }
+      if (r.idr_actual) return `${esc(money(r.idr_actual, "IDR"))}<div class="part">${esc(money(T.amount(r), cur))}</div>`;
+      return T.amount(r) != null ? esc(money(T.amount(r), cur)) : "—";
+    };
+
+    const cols =
+      mod === "payment"
+        ? ["Requester", "Description", "Payee", "Pay to account", "Date", "Amount"]
+        : mod === "trip"
+        ? ["Requester", "Purpose", "Vehicle", "Km", "Trip date", "Amount"]
+        : ["Requester", "Title", "Claim date", "Amount"];
+    const cells = (r) => {
+      const who = esc(nameMap[r.requester_id] || "—");
+      if (mod === "payment") {
+        const acct = r.bank_account_number
+          ? `${r.bank_name || ""} ${r.bank_account_number}${r.bank_account_name ? " (" + r.bank_account_name + ")" : ""}`.trim()
+          : "—";
+        return [who, esc(r.title || "—"), esc(r.payee_name || "—"), esc(acct), esc(fmtDate(dateOf(r))), amountCell(r)];
+      }
+      if (mod === "trip") {
+        return [who, esc(r.trip_purpose || "—"), esc(r.vehicle_option || "—"), r.total_km != null ? esc(r.total_km) : "—", esc(fmtDate(dateOf(r))), amountCell(r)];
+      }
+      return [who, esc(r.title || "Petty cash reimbursement"), esc(fmtDate(dateOf(r))), amountCell(r)];
+    };
+    const rowsHtml = rows
+      .map((r, i) => `<tr><td>${i + 1}</td>${cells(r).map((c, j) => `<td class="${j === cols.length - 1 ? "r" : ""}">${c}</td>`).join("")}</tr>`)
+      .join("");
+
+    // totals: per currency of what the rows come to; a batch also states what
+    // the bank actually sent, which is the figure that matters on a payment record
+    const totals = {};
+    rows.forEach((r) => {
+      const cur = T.currency(r) || "IDR";
+      const v = isPaid ? (r.idr_actual ? null : Number(T.amount(r) || 0)) : remainingOf(mod, r);
+      if (r.idr_actual && isPaid) totals.IDR = (totals.IDR || 0) + Number(r.idr_actual);
+      else totals[cur] = (totals[cur] || 0) + (v || 0);
+    });
+    const totalStr = Object.entries(totals).map(([c, v]) => money(v, c)).join("  +  ");
+    const sentStr = batch && batch.amount != null
+      ? money(batch.amount, batch.currency || "IDR") + (batch.fees ? ` + ${money(batch.fees, batch.currency || "IDR")} fees` : "")
+      : null;
+
+    const metaBox = batch
+      ? `<div class="who">
+           <div class="n">Transfer on ${esc(fmtDate(batch.paid_date || sec.day))}${batch.bank_ref ? ` · ref ${esc(batch.bank_ref)}` : ""}</div>
+           <div class="r">Paid by ${esc(nameMap[sec.payer] || "—")}${sentStr ? ` · amount sent <b>${esc(sentStr)}</b>` : ""}${batch.note ? ` · ${esc(batch.note)}` : ""}</div>
+         </div>`
+      : `<div class="who">
+           <div class="n">${rows.length} ${esc(T.label.toLowerCase())} item${rows.length === 1 ? "" : "s"} approved, not yet paid</div>
+           <div class="r">Amounts shown are what is still owed.</div>
+         </div>`;
+
+    const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(docTitle)} — ${esc(T.label)}</title>
+      <style>
+        :root { color-scheme: light; }
+        * { box-sizing: border-box; }
+        html, body { background: #ffffff; }
+        body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #14211b; margin: 32px; }
+        .head { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:3px solid #157347; padding-bottom:14px; margin-bottom:20px; }
+        .company { font-size:22px; font-weight:800; color:#0f5132; }
+        .doc-title { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:#5f6f68; margin-top:2px; }
+        .meta { text-align:right; font-size:12px; color:#5f6f68; }
+        .who { background:#e8f5ee; border-radius:10px; padding:14px 16px; margin-bottom:18px; }
+        .who .n { font-size:17px; font-weight:700; }
+        .who .r { font-size:14px; margin-top:4px; }
+        table { width:100%; border-collapse:collapse; font-size:13px; margin-top:6px; }
+        th, td { text-align:left; padding:9px 10px; border-bottom:1px solid #e2e8e4; vertical-align:top; }
+        th { background:#f4f7f5; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#5f6f68; }
+        td.r, th.r { text-align:right; font-variant-numeric: tabular-nums; white-space:nowrap; }
+        td .part { font-size:10px; color:#8a5a12; white-space:normal; margin-top:2px; }
+        .total { display:flex; justify-content:flex-end; gap:24px; align-items:baseline; margin-top:16px; font-size:16px; }
+        .total .val { font-size:20px; font-weight:800; color:#0f5132; font-variant-numeric: tabular-nums; }
+        .sign { display:flex; gap:60px; margin-top:48px; font-size:12px; color:#5f6f68; }
+        .sign .box { flex:1; }
+        .sign .line { border-top:1px solid #9aa8a1; margin-top:44px; padding-top:6px; }
+        .toolbar { margin-bottom:18px; }
+        .btn { font:inherit; font-weight:600; background:#157347; color:#fff; border:0; border-radius:8px; padding:9px 16px; cursor:pointer; }
+        @media print { .toolbar { display:none; } body { margin:0; } }
+      </style></head><body>
+      <div class="toolbar"><button class="btn" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
+      <div class="head">
+        <div><div class="company">${esc(company)}</div><div class="doc-title">${esc(docTitle)} · ${esc(T.label)}</div></div>
+        <div class="meta">Printed: ${esc(today)}</div>
+      </div>
+      ${metaBox}
+      <table>
+        <thead><tr><th>#</th>${cols.map((c, j) => `<th class="${j === cols.length - 1 ? "r" : ""}">${esc(c)}</th>`).join("")}</tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+      <div class="total"><span>${isPaid ? "Items settled" : "Total still to pay"}</span><span class="val">${esc(totalStr)}</span></div>
+      <div class="sign">
+        <div class="box"><div class="line">Prepared by${preparedBy ? " — " + esc(preparedBy) : ""}</div></div>
+        <div class="box"><div class="line">${isPaid ? "Checked by" : "Approved for transfer by"}</div></div>
       </div>
       <script>window.addEventListener('load',function(){setTimeout(function(){window.print();},250);});<\/script>
       </body></html>`;
