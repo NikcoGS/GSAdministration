@@ -1613,11 +1613,15 @@
   // Group a person's own records into collapsible status sections.
   // Pending opens by default (that's what still needs watching).
   function statusSections(rows, tableFn, opts = {}) {
+    // "approved" covers two very different states for the person waiting on
+    // the money, so it is split: still to be paid, and paid.
     const ORDER = [
       ["pending", "⏳ Pending", true],
-      ["approved", "✅ Approved", false],
+      ["approved", "✅ Approved — awaiting payment", false],
+      ["paid", "💸 Paid", false],
       ["rejected", "✕ Rejected", false],
     ];
+    const groupOf = (r) => (r.status === "approved" && r.paid_at ? "paid" : r.status);
     const totalOf = (list) => {
       const t = {};
       list.forEach((r) => {
@@ -1628,13 +1632,13 @@
       const s = Object.entries(t).map(([c, v]) => money(v, c)).join(" + ");
       return s || "";
     };
-    return ORDER.filter(([key]) => rows.some((r) => r.status === key))
+    return ORDER.filter(([key]) => rows.some((r) => groupOf(r) === key))
       .map(([key, label, open]) => {
-        const group = rows.filter((r) => r.status === key);
+        const group = rows.filter((r) => groupOf(r) === key);
         const sum = totalOf(group);
         return (
           `<details class="batch-sec"${open ? " open" : ""}>` +
-          `<summary class="section-h${key === "approved" ? " paid" : ""}">${label} (${group.length})${
+          `<summary class="section-h${key === "paid" ? " paid" : ""}">${label} (${group.length})${
             sum ? ` · <b>${sum}</b>` : ""
           }</summary>` +
           tableFn(group, false) +
@@ -4210,6 +4214,7 @@
       );
     }
 
+    let slipsInHistory = false; // history already links each transfer's slip
     // Payment history: every transfer applied to this invoice
     if (type === "payment" && !opts.hidePrices && (paidSoFar(r) > 0 || r.paid_at)) {
       const { data: allocs } = await sb
@@ -4229,12 +4234,26 @@
         // a transfer keyed with the wrong date or amount is corrected here —
         // it is the record of the transfer, so nothing else should own it
         const fixable = can("approval");
+        // one slip per transfer: an invoice paid in instalments has several
+        const slipUrl = {};
+        await Promise.all(
+          Object.values(bMap).filter((b) => b.proof_path).map(async (b) => {
+            const { data: su } = await sb.storage.from("payment-proofs").createSignedUrl(b.proof_path, 300);
+            if (su) slipUrl[b.id] = su.signedUrl;
+          })
+        );
+        const anySlip = Object.keys(slipUrl).length > 0;
+        slipsInHistory = anySlip;
         const rowsHtml = allocs
           .map((a, i) => {
             const b = bMap[a.batch_id] || {};
             return `<tr><td>${i + 1}</td><td>${esc(fmtDate(b.paid_date || a.created_at))}</td>
               <td>${esc(b.bank_ref || "—")}</td>
               <td class="amount">${money(a.amount, r.currency)}</td>${
+                anySlip
+                  ? `<td>${slipUrl[a.batch_id] ? `<a href="${slipUrl[a.batch_id]}" target="_blank" rel="noopener">🧾 Slip</a>` : "—"}</td>`
+                  : ""
+              }${
                 fixable
                   ? `<td class="row-edit">${
                       a.batch_id
@@ -4252,7 +4271,7 @@
                left > 0 ? `, <b style="color:var(--amber)">${money(left, r.currency)} outstanding</b>` : " (settled in full)"
              }</div>
              <div class="table-wrap"><table>
-               <thead><tr><th>#</th><th>Date</th><th>Reference</th><th>Amount</th>${
+               <thead><tr><th>#</th><th>Date</th><th>Reference</th><th>Amount</th>${anySlip ? "<th>Slip</th>" : ""}${
                  fixable ? "<th></th>" : ""
                }</tr></thead>
                <tbody>${rowsHtml}</tbody></table></div>
@@ -4264,8 +4283,10 @@
       }
     }
 
-    // Admin: show the payment entry (ref, date, proof) for paid items
-    if (isAdmin && r.batch_id) {
+    // The payment entry (date, reference, transfer slip) for paid items —
+    // shown to reviewers and to the person the request belongs to, who is the
+    // one asking "has it been sent?". The database decides who may read it.
+    if (r.batch_id && (isAdmin || r.requester_id === state.user.id)) {
       const { data: bt } = await sb.from("disbursement_batches").select("*").eq("id", r.batch_id).maybeSingle();
       if (bt) {
         const slot2 = card.querySelector("#file-slot");
@@ -4280,9 +4301,9 @@
           fix.addEventListener("click", () => openEditBatch(bt));
           slot2.append(fix);
         }
-        if (bt.proof_path) {
+        if (bt.proof_path && !slipsInHistory) {
           const { data: pu } = await sb.storage.from("payment-proofs").createSignedUrl(bt.proof_path, 120);
-          if (pu) slot2.append(el(`<a class="btn btn-ghost btn-sm" href="${pu.signedUrl}" target="_blank" rel="noopener">🧾 View transfer proof</a>`));
+          if (pu) slot2.append(el(`<a class="btn btn-ghost btn-sm" href="${pu.signedUrl}" target="_blank" rel="noopener">🧾 View payment slip</a>`));
         }
       }
     }
