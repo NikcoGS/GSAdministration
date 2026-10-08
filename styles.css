@@ -474,6 +474,9 @@ tbody tr:hover { background: #fafcfb; cursor: pointer; }
   text-align: center; color: var(--muted); font-size: 13px; background: #fbfdfc;
 }
 .file-drop input { display: none; }
+.file-drop.has-file { border-style: solid; border-color: #bfe2cd; background: var(--green-050); }
+.file-drop.needs-file { border-color: var(--red); background: var(--red-bg); color: var(--red); }
+.file-preview { display: block; max-height: 160px; max-width: 100%; margin: 10px auto 0; border-radius: 8px; border: 1px solid var(--line); }
 .file-name { font-weight: 600; color: var(--ink); }
 
 .config-warn {

@@ -1234,17 +1234,20 @@
             <input name="claim_items_other" placeholder="If 'Other', describe here" style="margin-top:8px" />
           </div>
           <div class="full">
-            <label>Google Map Screenshots <span class="hint">(required)</span></label>
+            <label for="map-input">Google Map Screenshots <span class="hint">(required)</span></label>
             <label class="file-drop" id="map-drop">
-              <input type="file" name="map_screenshot" accept="image/*,.pdf" required />
-              <span id="map-label">🗺️ Click to attach the Google Maps route screenshot</span>
+              <input type="file" id="map-input" name="map_screenshot" accept="image/*,.pdf" />
+              <span id="map-label">🗺️ Tap to attach the Google Maps route screenshot</span>
+              <img id="map-preview" class="file-preview" alt="" hidden />
             </label>
+            <small class="hint">Take a screenshot of the route in Google Maps first, then pick it from your photos here.</small>
           </div>
           <div class="full">
-            <label>Trip Receipt</label>
+            <label for="receipt-input">Trip Receipt</label>
             <label class="file-drop" id="receipt-drop">
-              <input type="file" name="receipt" accept="image/*,.pdf" />
-              <span id="receipt-label">📎 Click to attach the trip receipt (toll / parking / fuel)</span>
+              <input type="file" id="receipt-input" name="receipt" accept="image/*,.pdf" />
+              <span id="receipt-label">📎 Tap to attach the trip receipt (toll / parking / fuel)</span>
+              <img id="receipt-preview" class="file-preview" alt="" hidden />
             </label>
           </div>
         </div>
@@ -1259,17 +1262,27 @@
         <p id="trip-msg" class="msg"></p>
       </form>`;
 
-    const wireFile = (inputName, labelId, defaultText) => {
+    const wireFile = (inputName, labelId, previewId, defaultText) => {
       const inp = $(`#trip-form input[name=${inputName}]`);
+      const preview = $("#" + previewId);
       inp.addEventListener("change", () => {
         const f = inp.files[0];
+        const drop = inp.closest(".file-drop");
+        drop.classList.toggle("has-file", !!f);
+        if (preview.src) URL.revokeObjectURL(preview.src);
+        preview.hidden = true;
+        if (f && f.type.startsWith("image/")) {
+          preview.src = URL.createObjectURL(f);
+          preview.hidden = false;
+        }
+        const kb = f ? Math.round(f.size / 1024) : 0;
         $("#" + labelId).innerHTML = f
-          ? '<span class="file-name">📎 ' + esc(f.name) + "</span> — click to change"
+          ? `<span class="file-name">✅ ${esc(f.name)}</span> · ${kb >= 1024 ? (kb / 1024).toFixed(1) + " MB" : kb + " KB"} — tap to change`
           : defaultText;
       });
     };
-    wireFile("map_screenshot", "map-label", "🗺️ Click to attach the Google Maps route screenshot");
-    wireFile("receipt", "receipt-label", "📎 Click to attach the trip receipt (toll / parking / fuel)");
+    wireFile("map_screenshot", "map-label", "map-preview", "🗺️ Tap to attach the Google Maps route screenshot");
+    wireFile("receipt", "receipt-label", "receipt-preview", "📎 Tap to attach the trip receipt (toll / parking / fuel)");
 
     const form = $("#trip-form");
     const recalcTrip = () => {
@@ -1304,6 +1317,16 @@
     const msg = $("#trip-msg");
     const mapFile = form.map_screenshot.files[0];
     const receiptFile = form.receipt.files[0];
+
+    if (!mapFile) {
+      msg.textContent = "Attach the Google Maps screenshot of the route — it is required for every trip claim.";
+      msg.className = "msg error";
+      const box = $("#map-drop");
+      box.classList.add("needs-file");
+      box.scrollIntoView({ behavior: "smooth", block: "center" });
+      setTimeout(() => box.classList.remove("needs-file"), 2500);
+      return;
+    }
 
     for (const f of [mapFile, receiptFile]) {
       if (f && f.size > 10 * 1024 * 1024) {
