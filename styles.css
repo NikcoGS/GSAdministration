@@ -442,6 +442,7 @@ tbody tr:hover { background: #fafcfb; cursor: pointer; }
 .badge.pending  { background: var(--amber-bg); color: var(--amber); }
 .badge.approved { background: var(--green-badge-bg); color: var(--green-badge); }
 .badge.rejected { background: var(--red-bg); color: var(--red); }
+.badge.cancelled { background: #eef0ef; color: #5f6f68; text-decoration: line-through; }
 .badge.confirmed, .badge.completed { background: var(--green-badge-bg); color: var(--green-badge); }
 .badge.preparing { background: #e7eefc; color: #274690; }
 

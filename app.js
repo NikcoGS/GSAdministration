@@ -1643,6 +1643,7 @@
       ["approved", "✅ Approved — awaiting payment", false],
       ["paid", "💸 Paid", false],
       ["rejected", "✕ Rejected", false],
+      ["cancelled", "⊘ Cancelled", false],
     ];
     const groupOf = (r) => (r.status === "approved" && r.paid_at ? "paid" : r.status);
     const totalOf = (list) => {
@@ -2636,7 +2637,8 @@
       const status = r.paid_at
         ? "Paid"
         : r.status === "approved" ? "Approved – not yet paid"
-        : r.status === "rejected" ? "Rejected" : "Pending approval";
+        : r.status === "rejected" ? "Rejected"
+        : r.status === "cancelled" ? "Cancelled" : "Pending approval";
 
       const amountPaid = r.paid_at
         ? (r.idr_actual != null ? num(r.idr_actual) : toIdr(r.amount))
@@ -2691,7 +2693,7 @@
       const cur = (r.currency || "IDR").toUpperCase();
       const rate = cur === "IDR" ? 1 : r.fx_rate_actual || r.fx_rate || null;
       const status = r.paid_at ? "Paid" : r.status === "approved" ? "Approved – not yet paid"
-        : r.status === "rejected" ? "Rejected" : "Pending approval";
+        : r.status === "rejected" ? "Rejected" : r.status === "cancelled" ? "Cancelled" : "Pending approval";
       const payDate = bt?.paid_date || (r.paid_at ? String(r.paid_at).slice(0, 10) : "");
       const base = [r.ref_number || "", r.invoice_date || "", r.payee_name || ""];
 
@@ -2869,6 +2871,7 @@
       if (f === "paid" && !r.paid_at) return false;
       if (f === "unpaid" && (r.paid_at || r.status !== "approved")) return false;
       if (f === "pending" && r.status !== "pending") return false;
+      if (f === "cancelled" && r.status !== "cancelled") return false;
       if (state.purchSupplier && (r.payee_name || "") !== state.purchSupplier) return false;
       if (state.purchCurrency && (r.currency || "IDR") !== state.purchCurrency) return false;
       if (state.purchFrom && dateOf(r) < state.purchFrom) return false;
@@ -2939,7 +2942,7 @@
       <div class="toolbar">
         <input id="purch-search" placeholder="Search invoice no, supplier, item, note…"
                value="${esc(state.purchSearch || "")}" style="max-width:340px" />
-        ${pill("all", "All")}${pill("paid", "Paid")}${pill("unpaid", "Approved – unpaid")}${pill("pending", "Pending")}
+        ${pill("all", "All")}${pill("paid", "Paid")}${pill("unpaid", "Approved – unpaid")}${pill("pending", "Pending")}${pill("cancelled", "Cancelled")}
         <span class="spacer"></span>
         ${
           canEdit
@@ -3618,7 +3621,7 @@
         <button data-mod="petty" class="${mod === "petty" ? "active" : ""}">🧾 Petty Cash</button>
       </div>`;
 
-    const filters = ["pending", "approved", "rejected", "all"];
+    const filters = ["pending", "approved", "rejected", "cancelled", "all"];
     const pills =
       filters
         .map(
@@ -4078,6 +4081,10 @@
       rows.push(["Reviewed", fmtDate(r.reviewed_at)]);
       if (r.review_note) rows.push(["Review note", r.review_note]);
     }
+    if (r.status === "cancelled") {
+      rows.push(["⊘ Payment cancelled", `${fmtDate(r.cancelled_at)} · by ${nameMap[r.cancelled_by] || "an administrator"}`]);
+      if (r.cancel_reason) rows.push(["Reason", r.cancel_reason]);
+    }
     if (r.paid_at) rows.push(["💸 Paid on", fmtDate(r.paid_at)]);
 
     const detailHtml = rows
@@ -4346,6 +4353,24 @@
       approve.addEventListener("click", () => reviewRequest(r, "approved", card, approve, reject, type));
       reject.addEventListener("click", () => reviewRequest(r, "rejected", card, approve, reject, type));
       actions.append(approve, reject);
+    }
+
+    // Reviewer: a cancelled item can go back into the queue
+    if (isAdmin && r.status === "cancelled" && can("approval")) {
+      const back = el('<button class="btn btn-ghost">↩︎ Restore to approved</button>');
+      back.addEventListener("click", async () => {
+        if (!confirm("Put this back into the payment queue as approved?")) return;
+        const { error } = await sb
+          .from(TYPES[type].table)
+          .update({ status: "approved", cancelled_by: null, cancelled_at: null, cancel_reason: null })
+          .eq("id", r.id);
+        if (error) { toast(friendlyError(error), "error"); return; }
+        state.purchAll = null;
+        closeModal();
+        toast("Restored — it is back in Disburse");
+        route();
+      });
+      actions.append(back);
     }
 
     // Admin: input the payment for an approved & unpaid item
@@ -4872,6 +4897,36 @@
   // ==========================================================================
   //  VIEW: DISBURSE (admin) — approved & unpaid items, grouped by user
   // ==========================================================================
+  // Take an approved item out of the payment queue. It was approved, so this is
+  // not a rejection — it is a decision after the fact (invoice voided, credited,
+  // duplicate, paid some other way) and is recorded as its own status with who,
+  // when and why. Money already sent on a part-paid item stays on record.
+  async function cancelDisbursement(type, r) {
+    const cur = TYPES[type].currency(r) || "IDR";
+    const paid = paidSoFar(r);
+    const reason = prompt(
+      `Cancel the payment of ${money(remainingOf(type, r), cur)} for "${TYPES[type].title(r)}"?\n\n` +
+      (paid > 0 ? `${money(paid, cur)} already sent on this item stays recorded.\n\n` : "") +
+      "Reason (shown to the requester):",
+      ""
+    );
+    if (reason === null) return;
+    if (!reason.trim()) { toast("Give a reason — the requester will see it", "error"); return; }
+    const { error } = await sb
+      .from(TYPES[type].table)
+      .update({
+        status: "cancelled",
+        cancelled_by: state.user.id,
+        cancelled_at: new Date().toISOString(),
+        cancel_reason: reason.trim(),
+      })
+      .eq("id", r.id);
+    if (error) { toast(friendlyError(error), "error"); return; }
+    state.purchAll = null;
+    toast("Payment cancelled — the requester can see why");
+    route();
+  }
+
   // Total for a set of items: per-currency, plus an IDR equivalent when any
   // of them are foreign. Recomputed as the selection changes.
   function destTotalHtml(items) {
@@ -5105,7 +5160,10 @@
                       ? `<div class="paytiny">${idrEq != null ? "≈ " + money(idrEq, "IDR") + " est." : "no IDR estimate"}</div>`
                       : ""
                   }</td>
-                  <td><button class="btn btn-ghost btn-sm mark-paid" data-type="${type}" data-id="${r.id}">Pay this only</button></td>
+                  <td style="white-space:nowrap">
+                    <button class="btn btn-ghost btn-sm mark-paid" data-type="${type}" data-id="${r.id}">Pay this only</button>
+                    <button class="btn btn-ghost btn-sm cancel-disb" data-type="${type}" data-id="${r.id}" title="Take this out of the payment queue">✕ Cancel</button>
+                  </td>
                 </tr>`;
             })
             .join("");
@@ -5190,12 +5248,19 @@
     // row click -> detail modal (ignore the pay button and the checkbox)
     $$("tbody tr", root).forEach((tr) => {
       tr.addEventListener("click", (e) => {
-        if (e.target.closest(".mark-paid, .sel-dest")) return;
+        if (e.target.closest(".mark-paid, .cancel-disb, .sel-dest")) return;
         const it = items.find((x) => x.type === tr.dataset.type && x.r.id === tr.dataset.id);
         if (it) openDetail(it.r, true, nameMap, it.type);
       });
     });
     // per-item payment entry
+    $$(".cancel-disb", root).forEach((b) =>
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const it = items.find((x) => x.type === b.dataset.type && x.r.id === b.dataset.id);
+        if (it) cancelDisbursement(it.type, it.r);
+      })
+    );
     $$(".mark-paid", root).forEach((b) =>
       b.addEventListener("click", (e) => {
         e.stopPropagation();
