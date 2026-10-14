@@ -2953,6 +2953,7 @@
         }
         <button class="btn btn-ghost btn-sm" id="purch-refresh">↻ Refresh</button>
         <button class="btn btn-ghost btn-sm" id="purch-export">⬇️ Export CSV</button>
+        <button class="btn btn-ghost btn-sm" id="purch-zip" title="Every invoice file in the current list, in one zip">📦 Download invoices</button>
       </div>
       <div class="toolbar filters">
         <select id="purch-supplier" title="Supplier">
@@ -3058,6 +3059,7 @@
       exportPurchasingCsv(rows.length === state.purchAll.length ? null : new Set(rows.map((r) => r.id)))
     );
     $("#purch-reprice")?.addEventListener("click", () => repriceAllPaid($("#purch-reprice")));
+    $("#purch-zip")?.addEventListener("click", () => downloadInvoicesZip(rows, $("#purch-zip")));
     $$("tbody tr", root).forEach((tr) =>
       tr.addEventListener("click", (e) => {
         const r = rows.find((x) => x.id === tr.dataset.id);
@@ -3066,6 +3068,86 @@
         else openDetail(r, true, {}, "payment");
       })
     );
+  }
+
+  // --------------------------------------------------------------------------
+  //  Every invoice file in the current list, as one zip. Built in the browser
+  //  from the signed-in session, so the storage rules decide what goes in —
+  //  nothing is pulled through a shared key. Invoices that live in Drive (the
+  //  imported history) can't be fetched cross-site; they are listed in the
+  //  index file with their links instead.
+  // --------------------------------------------------------------------------
+  async function loadJsZip() {
+    if (window.JSZip) return window.JSZip;
+    await new Promise((ok, fail) => {
+      const sc = document.createElement("script");
+      sc.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+      sc.onload = ok;
+      sc.onerror = () => fail(new Error("Could not load the zip library — check the connection and try again."));
+      document.head.appendChild(sc);
+    });
+    return window.JSZip;
+  }
+
+  async function downloadInvoicesZip(list, btn) {
+    const withFile = list.filter((r) => r.invoice_path);
+    const driveOnly = list.filter((r) => !r.invoice_path && Array.isArray(r.drive_invoice_files) && r.drive_invoice_files.length);
+    if (!withFile.length && !driveOnly.length) { toast("None of these invoices has a file attached", "error"); return; }
+
+    const label = btn ? btn.textContent : "";
+    const say = (t) => { if (btn) btn.textContent = t; };
+    if (btn) btn.disabled = true;
+    try {
+      const JSZip = await loadJsZip();
+      const zip = new JSZip();
+      const used = new Set();
+      const index = [["Invoice No", "Invoice Date", "Supplier", "Amount", "Currency", "File in zip", "Drive link(s)", "Note"]];
+      let done = 0, failed = 0;
+
+      for (const r of withFile) {
+        say(`📦 ${done + 1} of ${withFile.length}…`);
+        const ext = (r.invoice_path.match(/\.[a-z0-9]{2,5}$/i) || [".pdf"])[0].toLowerCase();
+        let name = `${safeName(r.ref_number || r.title || "invoice")} — ${safeName(r.payee_name || "")}`.replace(/ — $/, "");
+        let candidate = name + ext, n = 2;
+        while (used.has(candidate.toLowerCase())) candidate = `${name} (${n++})${ext}`;
+        used.add(candidate.toLowerCase());
+
+        const { data, error } = await sb.storage.from("invoices").download(r.invoice_path);
+        if (error || !data) {
+          failed++;
+          index.push([r.ref_number || "", r.invoice_date || "", r.payee_name || "", r.amount ?? "", r.currency || "IDR", "", "", "file could not be read: " + (error?.message || "missing")]);
+          continue;
+        }
+        zip.file(candidate, data);
+        done++;
+        index.push([r.ref_number || "", r.invoice_date || "", r.payee_name || "", r.amount ?? "", r.currency || "IDR", candidate, "", ""]);
+      }
+      driveOnly.forEach((r) => {
+        index.push([r.ref_number || "", r.invoice_date || "", r.payee_name || "", r.amount ?? "", r.currency || "IDR", "",
+          r.drive_invoice_files.map((d) => d.url).join(" | "), "kept in Google Drive — open the link"]);
+      });
+
+      const csv = index.map((row) => row.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
+      zip.file("_index.csv", "﻿" + csv);
+
+      say("📦 Compressing…");
+      const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `GS_invoices_${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+
+      const bits = [`${done} file${done === 1 ? "" : "s"} zipped`];
+      if (driveOnly.length) bits.push(`${driveOnly.length} in Drive (links in _index.csv)`);
+      if (failed) bits.push(`${failed} could not be read`);
+      toast(bits.join(" · "), failed && !done ? "error" : "ok");
+    } catch (err) {
+      toast(err.message || "Download failed", "error");
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = label; }
+    }
   }
 
   // --------------------------------------------------------------------------
