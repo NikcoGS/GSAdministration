@@ -3474,8 +3474,8 @@
 
   // ==========================================================================
   //  VIEW: PETTY CASH CODER (admin) — codes petty cash lines to the Odoo chart
-  //  of accounts. The coder itself is coder.html (brought in from the Claude
-  //  artifact) in an iframe; this view feeds it the claims from the database.
+  //  of accounts. The coder itself is the page in coder.js (brought in from the
+  //  Claude artifact), rendered into an iframe; this view feeds it the claims.
   // ==========================================================================
   function renderCoder() {
     const root = $("#view-root");
@@ -3491,7 +3491,10 @@
         <button class="btn btn-primary btn-sm" id="cd-load">⬇️ Load from petty cash claims</button>
         <span class="fx-hint" id="cd-note"></span>
       </div>
-      <iframe id="coder-frame" class="coder-frame" src="coder.html?v=68" title="Petty Cash Coder"></iframe>`;
+      <iframe id="coder-frame" class="coder-frame" title="Petty Cash Coder"></iframe>`;
+    // the page lives in coder.js and is written into the frame here — there is
+    // no coder.html to open without logging in
+    $("#coder-frame").srcdoc = window.GS_CODER_HTML || "<p style='font-family:sans-serif;padding:20px'>The coder did not load — reload the page.</p>";
 
     $("#cd-from").addEventListener("change", (e) => (state.coderFrom = e.target.value));
     $("#cd-to").addEventListener("change", (e) => (state.coderTo = e.target.value));
