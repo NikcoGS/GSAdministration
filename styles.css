@@ -512,3 +512,7 @@ tbody tr:hover { background: #fafcfb; cursor: pointer; }
 .link-btn:hover { text-decoration: underline; text-underline-offset: 3px; }
 .auth-h { font-size: 17px; margin: 18px 0 4px; }
 .auth-note { text-align: center; line-height: 1.5; }
+
+/* Petty Cash Coder lives in its own page inside the admin view */
+.coder-frame { width: 100%; height: calc(100vh - 150px); min-height: 560px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
+@media (max-width: 720px) { .coder-frame { height: calc(100vh - 190px); } }

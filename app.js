@@ -67,6 +67,9 @@
     purchSearch: "",
     purchFilter: "all",
     purchSort: { key: "date", dir: "desc" },
+    coderFrom: "",
+    coderTo: "",
+    coderPaidOnly: false,
     purchSupplier: "",
     purchCurrency: "",
     purchFrom: "",
@@ -85,9 +88,10 @@
     ["disburse", "💸 Disburse"],
     ["tracking", "📦 Site ops tracking"],
     ["purchasing", "📚 Purchasing book"],
+    ["coder", "🧮 Petty cash coder"],
   ];
   const EMPLOYEE_DEFAULT = ["payment", "trip", "petty", "siteops"];
-  const ADMIN_FEATURES = ["approval", "disburse", "tracking", "purchasing"];
+  const ADMIN_FEATURES = ["approval", "disburse", "tracking", "purchasing", "coder"];
 
   // mirrors public.has_perm() in the database
   function permsOf(profile) {
@@ -444,7 +448,7 @@
     let view = (location.hash || "#dashboard").slice(1);
     const allViews = ["dashboard", "new", "trips", "newtrip", "petty", "newpetty",
       "receiving", "newreceiving", "movements", "newmovement", "admin", "disburse",
-      "tracking", "purchasing", "users", "settings", "noaccess"];
+      "tracking", "purchasing", "coder", "users", "settings", "noaccess"];
     if (!allViews.includes(view)) view = "dashboard";
 
     // feature gating: send people to something they can actually open
@@ -453,7 +457,7 @@
       trips: "trip", newtrip: "trip",
       petty: "petty", newpetty: "petty",
       receiving: "siteops", newreceiving: "siteops", movements: "siteops", newmovement: "siteops",
-      admin: "approval", disburse: "disburse", tracking: "tracking", purchasing: "purchasing",
+      admin: "approval", disburse: "disburse", tracking: "tracking", purchasing: "purchasing", coder: "coder",
     };
     if (view === "users" && state.profile.role !== "admin") view = "settings";
 
@@ -484,6 +488,7 @@
       disburse: "Disburse",
       tracking: "Site Ops Tracking",
       purchasing: "Purchasing Book",
+      coder: "Petty Cash Coder",
       users: "Users & Access",
       settings: "My Settings",
       noaccess: "Welcome",
@@ -521,6 +526,7 @@
     else if (view === "disburse") renderDisburse();
     else if (view === "tracking") renderTracking();
     else if (view === "purchasing") renderPurchasing();
+    else if (view === "coder") renderCoder();
     else if (view === "users") renderUsers();
     else if (view === "settings") renderSettings();
     else if (view === "noaccess") renderNoAccess();
@@ -3463,6 +3469,82 @@
       closeModal();
       toast("Invoice updated");
       route();
+    });
+  }
+
+  // ==========================================================================
+  //  VIEW: PETTY CASH CODER (admin) — codes petty cash lines to the Odoo chart
+  //  of accounts. The coder itself is coder.html (brought in from the Claude
+  //  artifact) in an iframe; this view feeds it the claims from the database.
+  // ==========================================================================
+  function renderCoder() {
+    const root = $("#view-root");
+    const today = new Date();
+    if (!state.coderFrom) state.coderFrom = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
+    if (!state.coderTo) state.coderTo = today.toISOString().slice(0, 10);
+
+    root.innerHTML = `
+      <div class="toolbar filters" style="margin-top:0">
+        <label class="daterange">Claim date from <input type="date" id="cd-from" value="${esc(state.coderFrom)}" /></label>
+        <label class="daterange">to <input type="date" id="cd-to" value="${esc(state.coderTo)}" /></label>
+        <label class="daterange" style="gap:6px"><input type="checkbox" id="cd-paid" ${state.coderPaidOnly ? "checked" : ""} style="width:16px;height:16px;margin:0" /> paid only</label>
+        <button class="btn btn-primary btn-sm" id="cd-load">⬇️ Load from petty cash claims</button>
+        <span class="fx-hint" id="cd-note"></span>
+      </div>
+      <iframe id="coder-frame" class="coder-frame" src="coder.html?v=68" title="Petty Cash Coder"></iframe>`;
+
+    $("#cd-from").addEventListener("change", (e) => (state.coderFrom = e.target.value));
+    $("#cd-to").addEventListener("change", (e) => (state.coderTo = e.target.value));
+    $("#cd-paid").addEventListener("change", (e) => (state.coderPaidOnly = e.target.checked));
+
+    $("#cd-load").addEventListener("click", async () => {
+      const btn = $("#cd-load"), note = $("#cd-note");
+      btn.disabled = true; note.textContent = "Loading…";
+      try {
+        // approved claims in the window; "paid only" narrows to settled ones
+        let q = sb.from("petty_cash_claims").select("id,requester_id,claim_date,created_at,status,paid_at,title")
+          .eq("status", "approved").order("claim_date", { ascending: false });
+        if (state.coderFrom) q = q.gte("claim_date", state.coderFrom);
+        if (state.coderTo) q = q.lte("claim_date", state.coderTo);
+        if (state.coderPaidOnly) q = q.not("paid_at", "is", null);
+        const { data: claims, error } = await q;
+        if (error) throw error;
+        if (!claims || !claims.length) { note.textContent = "No approved petty cash claims in that range."; return; }
+
+        const ids = claims.map((c) => c.id);
+        const { data: lines, error: lErr } = await sb
+          .from("petty_cash_lines").select("claim_id,keterangan,amount,position").in("claim_id", ids).order("position");
+        if (lErr) throw lErr;
+
+        const who = [...new Set(claims.map((c) => c.requester_id))];
+        const nameMap = {};
+        if (who.length) {
+          const { data: profs } = await sb.from("profiles").select("id,full_name,email").in("id", who);
+          (profs || []).forEach((p) => (nameMap[p.id] = p.full_name || p.email));
+        }
+        const byClaim = Object.fromEntries(claims.map((c) => [c.id, c]));
+        // the coder's own paste format: requester ⇥ description ⇥ date ⇥ amount ⇥ status
+        const fmt = (d) => d ? new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "";
+        const text = (lines || []).map((ln) => {
+          const c = byClaim[ln.claim_id];
+          return [
+            nameMap[c.requester_id] || "—",
+            String(ln.keterangan || "").replace(/\s+/g, " ").trim(),
+            fmt(c.claim_date || c.created_at),
+            "IDR " + Math.round(Number(ln.amount) || 0).toLocaleString("en-US"),
+            c.paid_at ? "paid" : "approved",
+          ].join("\t");
+        }).join("\n");
+
+        const frame = $("#coder-frame");
+        frame.contentWindow.postMessage({ type: "gs-lines", text, count: (lines || []).length }, location.origin);
+        note.textContent = `${(lines || []).length} lines from ${claims.length} claim${claims.length === 1 ? "" : "s"}`;
+      } catch (err) {
+        note.textContent = "";
+        toast(friendlyError(err), "error");
+      } finally {
+        btn.disabled = false;
+      }
     });
   }
 
