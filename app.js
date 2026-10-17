@@ -325,6 +325,12 @@
       state.recovering = true;
       try { sessionStorage.setItem(RECOVERY_FLAG, "1"); } catch (_e) { /* private mode */ }
     }
+    // Supabase re-issues the session whenever the tab regains focus (and every
+    // hour). That is the same person still signed in, not a login — rebuilding
+    // the screen for it wiped whatever was being typed every time someone
+    // switched apps. Keep the fresh token; only act on a real change of user.
+    const sameUser = session && state.user && session.user && session.user.id === state.user.id;
+    if (sameUser && !state.recovering) { state.user = session.user; return; }
     handleSession(session);
   });
 
