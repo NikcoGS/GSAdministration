@@ -2970,8 +2970,6 @@
             : ""
         }
         <button class="btn btn-ghost btn-sm" id="purch-refresh">↻ Refresh</button>
-        <button class="btn btn-ghost btn-sm" id="purch-export">⬇️ Export CSV</button>
-        <button class="btn btn-ghost btn-sm" id="purch-zip" title="Every invoice file in the current list, in one zip">📦 Download invoices</button>
       </div>
       <div class="toolbar filters">
         <select id="purch-supplier" title="Supplier">
@@ -2986,6 +2984,11 @@
           <input type="date" id="purch-to" value="${esc(state.purchTo || "")}" /></label>
         ${filtered ? '<button class="btn btn-ghost btn-sm" id="purch-clear">✕ Clear filters</button>' : ""}
       </div>
+      ${actionRow("purch", rows.length, state.purchAll.length, filtered || q || f !== "all", [
+        ["purch-report", "🖨️ Report"],
+        ["purch-export", "⬇️ Export CSV"],
+        ["purch-zip", "📦 Download invoices"],
+      ])}
       <div class="grand" style="margin-top:0">
         <span>${rows.length} invoice${rows.length === 1 ? "" : "s"} · ${paidCount} paid${
           estimatedCount ? ` · <span class="fx-hint">incl. ${estimatedCount} estimated</span>` : ""
@@ -3078,6 +3081,7 @@
     );
     $("#purch-reprice")?.addEventListener("click", () => repriceAllPaid($("#purch-reprice")));
     $("#purch-zip")?.addEventListener("click", () => downloadInvoicesZip(rows, $("#purch-zip")));
+    $("#purch-report")?.addEventListener("click", () => printPurchasingReport(rows));
     $$("tbody tr", root).forEach((tr) =>
       tr.addEventListener("click", (e) => {
         const r = rows.find((x) => x.id === tr.dataset.id);
@@ -3086,6 +3090,148 @@
         else openDetail(r, true, {}, "payment");
       })
     );
+  }
+
+  // The row that sits under the filters on the Purchasing Book and the Expense
+  // Tracker: every button in it acts on the filtered list, and the row says so
+  // with the count, so nobody exports the whole book when they meant a month.
+  function actionRow(prefix, shown, total, narrowed, buttons) {
+    const what = shown === 1 ? "item" : "items";
+    return `
+      <div class="toolbar actions" id="${prefix}-actions">
+        <span class="fx-hint">${
+          narrowed
+            ? `Report and exports cover the <b>${shown}</b> ${what} that match the filters (of ${total})`
+            : `Report and exports cover all <b>${shown}</b> ${what}`
+        }</span>
+        <span class="spacer"></span>
+        ${buttons.map(([id, label]) => `<button class="btn btn-ghost btn-sm" id="${id}"${shown ? "" : " disabled"}>${label} (${shown})</button>`).join("")}
+      </div>`;
+  }
+
+  // Printable report of the filtered Purchasing Book: totals by supplier, by
+  // month and by status, then the invoices. Rupiah throughout — the realised
+  // figure where an invoice is paid, the estimate where it is not.
+  function printPurchasingReport(rows) {
+    if (!rows.length) { toast("Nothing to report", "error"); return; }
+    const idrOf = (r) => {
+      if (r.idr_actual != null) return Number(r.idr_actual);
+      if ((r.currency || "IDR") === "IDR") return Number(r.amount || 0);
+      if (r.idr_estimate != null) return Number(r.idr_estimate);
+      return null;
+    };
+    const stateOf = (r) => r.paid_at ? "Paid" : r.status === "approved" ? "Approved – not yet paid"
+      : r.status === "rejected" ? "Rejected" : r.status === "cancelled" ? "Cancelled" : "Pending approval";
+    const dateOf = (r) => r.invoice_date || String(r.created_at || "").slice(0, 10);
+    const company = cfg.COMPANY_NAME || "Company";
+    const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
+    const preparedBy = state.profile.full_name || state.profile.email || "";
+    const period = state.purchFrom || state.purchTo
+      ? `${state.purchFrom ? fmtDate(state.purchFrom) : "start"} – ${state.purchTo ? fmtDate(state.purchTo) : "today"}`
+      : "all dates";
+    const FILTER_LABEL = { all: "all statuses", paid: "paid", unpaid: "approved – unpaid", pending: "pending", cancelled: "cancelled" };
+    const scope = [
+      state.purchSupplier || "all suppliers",
+      state.purchCurrency || "all currencies",
+      FILTER_LABEL[state.purchFilter || "all"],
+      state.purchSearch ? `matching “${state.purchSearch}”` : "",
+    ].filter(Boolean).join(" · ");
+
+    const total = rows.reduce((s, r) => s + (idrOf(r) || 0), 0);
+    const unknown = rows.filter((r) => idrOf(r) == null).length;
+    const estimated = rows.filter((r) => (r.currency || "IDR") !== "IDR" && r.idr_actual == null && idrOf(r) != null).length;
+    const group = (keyOf, labelOf) => {
+      const m = new Map();
+      rows.forEach((r) => {
+        const k = keyOf(r);
+        const g = m.get(k) || { label: labelOf(r), n: 0, idr: 0, unknown: 0 };
+        g.n++; const v = idrOf(r); if (v == null) g.unknown++; else g.idr += v;
+        m.set(k, g);
+      });
+      return [...m.values()].sort((a, b) => b.idr - a.idr);
+    };
+    const bySupplier = group((r) => (r.payee_name || "—").trim().toLowerCase(), (r) => r.payee_name || "—");
+    const byMonth = group((r) => dateOf(r).slice(0, 7), (r) =>
+      dateOf(r) ? new Date(dateOf(r) + "T12:00:00").toLocaleDateString("en-GB", { month: "long", year: "numeric" }) : "undated"
+    ).sort((a, b) => a.label.localeCompare(b.label));
+    const byState = group(stateOf, stateOf);
+
+    const sumTable = (title, groups) => `
+      <h2>${esc(title)}</h2>
+      <table><thead><tr><th>${esc(title.replace(/^By /, ""))}</th><th class="r">Invoices</th><th class="r">Amount (Rp)</th><th class="r">Share</th></tr></thead>
+      <tbody>${groups.map((g) => `<tr><td>${esc(g.label)}${g.unknown ? ` <span class="part">+ ${g.unknown} with no rupiah figure</span>` : ""}</td><td class="r">${g.n}</td><td class="r">${esc(money(g.idr, "IDR"))}</td><td class="r">${total ? (g.idr / total * 100).toFixed(1) : "0.0"}%</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td>Total</td><td class="r">${rows.length}</td><td class="r">${esc(money(total, "IDR"))}</td><td class="r">100%</td></tr></tfoot></table>`;
+
+    const lines = [...rows].sort((a, b) => dateOf(a).localeCompare(dateOf(b)));
+    const doc = `<!doctype html><html><head><meta charset="utf-8"><title>Purchasing Report — ${esc(period)}</title>
+      <style>
+        :root { color-scheme: light; }
+        * { box-sizing: border-box; }
+        html, body { background: #ffffff; }
+        body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #14211b; margin: 32px; }
+        .head { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:3px solid #157347; padding-bottom:14px; margin-bottom:20px; }
+        .company { font-size:22px; font-weight:800; color:#0f5132; }
+        .doc-title { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:#5f6f68; margin-top:2px; }
+        .meta { text-align:right; font-size:12px; color:#5f6f68; }
+        .who { background:#e8f5ee; border-radius:10px; padding:14px 16px; margin-bottom:18px; }
+        .who .n { font-size:17px; font-weight:700; }
+        .who .r { font-size:14px; margin-top:4px; }
+        h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:#5f6f68; margin:22px 0 6px; }
+        table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:6px; }
+        th, td { text-align:left; padding:7px 9px; border-bottom:1px solid #e2e8e4; vertical-align:top; }
+        th { background:#f4f7f5; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#5f6f68; }
+        td.r, th.r { text-align:right; font-variant-numeric: tabular-nums; white-space:nowrap; }
+        tfoot td { font-weight:700; background:#f4f7f5; }
+        tr { page-break-inside: avoid; }
+        .part { font-size:10px; color:#8a5a12; white-space:normal; }
+        .small { font-size:11px; color:#5f6f68; }
+        .sign { display:flex; gap:60px; margin-top:40px; font-size:12px; color:#5f6f68; }
+        .sign .box { flex:1; }
+        .sign .line { border-top:1px solid #9aa8a1; margin-top:44px; padding-top:6px; }
+        .toolbar { margin-bottom:18px; }
+        .btn { font:inherit; font-weight:600; background:#157347; color:#fff; border:0; border-radius:8px; padding:9px 16px; cursor:pointer; }
+        @media print { .toolbar { display:none; } body { margin:0; } h2 { page-break-after: avoid; } }
+      </style></head><body>
+      <div class="toolbar"><button class="btn" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
+      <div class="head">
+        <div><div class="company">${esc(company)}</div><div class="doc-title">Purchasing report · supplier invoices</div></div>
+        <div class="meta">Printed: ${esc(today)}</div>
+      </div>
+      <div class="who">
+        <div class="n">${esc(period)}</div>
+        <div class="r">${esc(scope)} · ${rows.length} invoice${rows.length === 1 ? "" : "s"} · <b>${esc(money(total, "IDR"))}</b>${
+          estimated ? ` <span class="part">incl. ${estimated} unpaid foreign at an estimated rate</span>` : ""
+        }${unknown ? ` <span class="part">+ ${unknown} with no rupiah figure</span>` : ""}</div>
+      </div>
+      ${sumTable("By supplier", bySupplier)}
+      ${sumTable("By month", byMonth)}
+      ${sumTable("By status", byState)}
+      <h2>Invoices</h2>
+      <table>
+        <thead><tr><th>Invoice date</th><th>Invoice no</th><th>Supplier</th><th>Description</th><th class="r">Amount (Rp)</th><th>Status</th><th>Paid</th></tr></thead>
+        <tbody>${lines.map((r) => {
+          const v = idrOf(r); const foreign = (r.currency || "IDR") !== "IDR";
+          return `<tr>
+          <td style="white-space:nowrap">${esc(fmtDate(dateOf(r)))}</td>
+          <td>${esc(r.ref_number || "—")}</td>
+          <td>${esc(r.payee_name || "—")}${r.request_type !== "supplier" ? ' <span class="small">(expense)</span>' : ""}</td>
+          <td>${esc(r.title || "")}</td>
+          <td class="r">${v == null ? "—" : esc(money(v, "IDR"))}${foreign ? `<div class="small">${esc(money(r.amount, r.currency))}${r.idr_actual ? " paid" : v == null ? "" : " est."}</div>` : ""}</td>
+          <td>${esc(stateOf(r))}</td>
+          <td style="white-space:nowrap">${r.paid_at ? esc(fmtDate(r.paid_at)) : "—"}</td>
+        </tr>`; }).join("")}</tbody>
+        <tfoot><tr><td colspan="4">Total</td><td class="r">${esc(money(total, "IDR"))}</td><td colspan="2"></td></tr></tfoot>
+      </table>
+      <div class="sign">
+        <div class="box"><div class="line">Prepared by${preparedBy ? " — " + esc(preparedBy) : ""}</div></div>
+        <div class="box"><div class="line">Reviewed by</div></div>
+      </div>
+      <script>window.addEventListener('load',function(){setTimeout(function(){window.print();},250);});<\/script>
+      </body></html>`;
+
+    const w = window.open("", "_blank");
+    if (!w) { toast("Allow pop-ups for this site to print", "error"); return; }
+    w.document.open(); w.document.write(doc); w.document.close();
   }
 
   // --------------------------------------------------------------------------
@@ -3629,8 +3775,6 @@
         ${pill("all", "All")}${pill("paid", "Paid")}${pill("unpaid", "Approved – unpaid")}${pill("pending", "Pending")}${pill("rejected", "Rejected")}${pill("cancelled", "Cancelled")}
         <span class="spacer"></span>
         <button class="btn btn-ghost btn-sm" id="exp-refresh">↻ Refresh</button>
-        <button class="btn btn-ghost btn-sm" id="exp-report">🖨️ Report</button>
-        <button class="btn btn-ghost btn-sm" id="exp-export">⬇️ Export CSV</button>
       </div>
       <div class="toolbar filters">
         <select id="exp-type">${opt("", state.expType, "All types")}${Object.entries(EXP_TYPES).map(([k, l]) => opt(k, state.expType, l)).join("")}</select>
@@ -3639,6 +3783,10 @@
         <label class="daterange">to <input type="date" id="exp-to" value="${esc(state.expTo)}" /></label>
         ${narrowed ? `<span class="fx-hint">${rows.length} of ${items.length}</span><button class="btn btn-ghost btn-sm" id="exp-clear">✕ Clear filters</button>` : ""}
       </div>
+      ${actionRow("exp", rows.length, items.length, narrowed, [
+        ["exp-report", "🖨️ Report"],
+        ["exp-export", "⬇️ Export CSV"],
+      ])}
       <div class="exp-tiles">
         <div class="exp-tile"><div class="k">Items</div><div class="v">${rows.length}</div><div class="f">${byType.map(([t, n]) => `${n} ${EXP_TYPES[t].replace(/^\S+\s/, "").toLowerCase()}`).join(" · ")}</div></div>
         <div class="exp-tile"><div class="k">Total</div><div class="v">${money(totalIdr, "IDR")}</div><div class="f">${unknown ? `${unknown} foreign without a rupiah figure` : "all lines"}</div></div>

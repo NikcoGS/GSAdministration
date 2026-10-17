@@ -525,3 +525,7 @@ tbody tr:hover { background: #fafcfb; cursor: pointer; }
 .exp-tile .f { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .exp-tile.warn { border-color: #e2c489; background: var(--amber-bg); }
 .exp-tile.warn .v { color: var(--amber); }
+
+/* the actions row under the filters: everything in it acts on the filtered list */
+.toolbar.actions { margin-top: -6px; margin-bottom: 14px; padding: 8px 12px; background: var(--green-050); border-radius: 10px; }
+.toolbar.actions .fx-hint b { color: var(--green-700); }
