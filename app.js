@@ -68,6 +68,9 @@
     purchFilter: "all",
     purchSort: { key: "date", dir: "desc" },
     coderFrom: "",
+    expAll: null,             // cached expense tracker rows { items, nameMap }
+    expSearch: "", expType: "", expState: "all", expWho: "", expFrom: "", expTo: "",
+    expSort: { key: "date", dir: "desc" },
     coderTo: "",
     coderPaidOnly: false,
     purchSupplier: "",
@@ -89,9 +92,10 @@
     ["tracking", "📦 Site ops tracking"],
     ["purchasing", "📚 Purchasing book"],
     ["coder", "🧮 Petty cash coder"],
+    ["expenses", "📒 Expense tracker"],
   ];
   const EMPLOYEE_DEFAULT = ["payment", "trip", "petty", "siteops"];
-  const ADMIN_FEATURES = ["approval", "disburse", "tracking", "purchasing", "coder"];
+  const ADMIN_FEATURES = ["approval", "disburse", "tracking", "purchasing", "coder", "expenses"];
 
   // mirrors public.has_perm() in the database
   function permsOf(profile) {
@@ -454,7 +458,7 @@
     let view = (location.hash || "#dashboard").slice(1);
     const allViews = ["dashboard", "new", "trips", "newtrip", "petty", "newpetty",
       "receiving", "newreceiving", "movements", "newmovement", "admin", "disburse",
-      "tracking", "purchasing", "coder", "users", "settings", "noaccess"];
+      "tracking", "purchasing", "coder", "expenses", "users", "settings", "noaccess"];
     if (!allViews.includes(view)) view = "dashboard";
 
     // feature gating: send people to something they can actually open
@@ -463,7 +467,7 @@
       trips: "trip", newtrip: "trip",
       petty: "petty", newpetty: "petty",
       receiving: "siteops", newreceiving: "siteops", movements: "siteops", newmovement: "siteops",
-      admin: "approval", disburse: "disburse", tracking: "tracking", purchasing: "purchasing", coder: "coder",
+      admin: "approval", disburse: "disburse", tracking: "tracking", purchasing: "purchasing", coder: "coder", expenses: "expenses",
     };
     if (view === "users" && state.profile.role !== "admin") view = "settings";
 
@@ -495,6 +499,7 @@
       tracking: "Site Ops Tracking",
       purchasing: "Purchasing Book",
       coder: "Petty Cash Coder",
+      expenses: "Expense Tracker",
       users: "Users & Access",
       settings: "My Settings",
       noaccess: "Welcome",
@@ -533,6 +538,7 @@
     else if (view === "tracking") renderTracking();
     else if (view === "purchasing") renderPurchasing();
     else if (view === "coder") renderCoder();
+    else if (view === "expenses") renderExpenses();
     else if (view === "users") renderUsers();
     else if (view === "settings") renderSettings();
     else if (view === "noaccess") renderNoAccess();
@@ -1158,7 +1164,7 @@
         const ext = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".")) : "";
         syncFileToDrive(file, `${safeName(payload.ref_number || payload.title)} - invoice - ${safeName(payload.payee_name)}${ext}`);
       }
-      state.purchAll = null; // purchasing book must reload
+      state.purchAll = null; state.expAll = null; // purchasing book must reload
       syncToGoogleSheet({ silent: true });
 
       toast("Supplier payment request submitted ✔");
@@ -3066,7 +3072,7 @@
       state.purchSupplier = state.purchCurrency = state.purchFrom = state.purchTo = "";
       renderPurchasing();
     });
-    $("#purch-refresh").addEventListener("click", () => { state.purchAll = null; renderPurchasing(); });
+    $("#purch-refresh").addEventListener("click", () => { state.purchAll = null; state.expAll = null; renderPurchasing(); });
     $("#purch-export").addEventListener("click", () =>
       exportPurchasingCsv(rows.length === state.purchAll.length ? null : new Set(rows.map((r) => r.id)))
     );
@@ -3287,7 +3293,7 @@
         if (await repriceToIdr(r, Math.round(idr))) done++; else failed++;
       }
 
-      state.purchAll = null;
+      state.purchAll = null; state.expAll = null;
       const bits = [`${done} invoice${done === 1 ? "" : "s"} repriced`];
       if (noPayment) bits.push(`${noPayment} could not be derived from a transfer`);
       if (failed) bits.push(`${failed} failed to save`);
@@ -3471,11 +3477,381 @@
       msg.className = "msg"; msg.textContent = "Saving…";
       const { error } = await sb.from("payment_requests").update(patch).eq("id", r.id);
       if (error) { msg.textContent = friendlyError(error); msg.className = "msg error"; return; }
-      state.purchAll = null;
+      state.purchAll = null; state.expAll = null;
       closeModal();
       toast("Invoice updated");
       route();
     });
+  }
+
+  // ==========================================================================
+  //  VIEW: EXPENSE TRACKER (admin) — everything paid out that is NOT a supplier
+  //  invoice: trip reimbursements, petty cash claims and expense payments. The
+  //  Purchasing Book's sibling: the same filters and sorting, a printable
+  //  report, and exports that carry the detail the accountant codes from —
+  //  every petty cash line, the trip's km and vehicle.
+  // ==========================================================================
+  const EXP_TYPES = { trip: "🚗 Trip", petty: "🧾 Petty cash", expense: "💳 Expense payment" };
+  const EXP_STATES = {
+    paid: "Paid", unpaid: "Approved – not yet paid", pending: "Pending approval",
+    rejected: "Rejected", cancelled: "Cancelled",
+  };
+  // the TYPES key behind each tracker type (expense payments are payment_requests)
+  const expKind = (it) => (it.type === "expense" ? "payment" : it.type);
+
+  async function loadExpenses() {
+    const [trips, petty, pays] = await Promise.all([
+      sb.from("trip_reimbursements").select("*").order("trip_date", { ascending: false }),
+      sb.from("petty_cash_claims").select("*").order("claim_date", { ascending: false }),
+      sb.from("payment_requests").select("*").neq("request_type", "supplier").order("created_at", { ascending: false }),
+    ]);
+    const err = trips.error || petty.error || pays.error;
+    if (err) throw err;
+    const items = [
+      ...(trips.data || []).map((r) => ({ type: "trip", r })),
+      ...(petty.data || []).map((r) => ({ type: "petty", r })),
+      ...(pays.data || []).map((r) => ({ type: "expense", r })),
+    ];
+
+    // petty cash lines — the detail that actually gets coded
+    const linesByClaim = {};
+    const pettyIds = (petty.data || []).map((r) => r.id);
+    for (let i = 0; i < pettyIds.length; i += 200) {
+      const { data: lines } = await sb
+        .from("petty_cash_lines").select("claim_id,keterangan,amount,position")
+        .in("claim_id", pettyIds.slice(i, i + 200)).order("position");
+      (lines || []).forEach((l) => (linesByClaim[l.claim_id] = linesByClaim[l.claim_id] || []).push(l));
+    }
+
+    const uids = [...new Set(items.map((it) => it.r.requester_id).filter(Boolean))];
+    const nameMap = {};
+    if (uids.length) {
+      const { data: profs } = await sb.from("profiles").select("id,full_name,email").in("id", uids);
+      (profs || []).forEach((p) => (nameMap[p.id] = p.full_name || p.email));
+    }
+    const bids = [...new Set(items.map((it) => it.r.batch_id).filter(Boolean))];
+    const batchMap = {};
+    if (bids.length) {
+      const { data: bts } = await sb.from("disbursement_batches").select("id,paid_date,bank_ref").in("id", bids);
+      (bts || []).forEach((b) => (batchMap[b.id] = b));
+    }
+
+    items.forEach((it) => {
+      const r = it.r;
+      it.id = r.id;
+      const own = it.type === "trip" ? r.trip_date : it.type === "petty" ? r.claim_date : r.transaction_date;
+      it.date = own || String(r.created_at || "").slice(0, 10);
+      it.who = nameMap[r.requester_id] || "—";
+      it.title =
+        it.type === "trip" ? r.trip_purpose || "Trip reimbursement"
+        : it.type === "petty" ? r.title || "Petty cash reimbursement"
+        : r.title || "";
+      it.amount = Number(it.type === "petty" ? r.total_amount : r.amount) || 0;
+      it.currency = r.currency || "IDR";
+      it.idr = idrValue(expKind(it), r);                // null = foreign with no rupiah figure
+      it.state = r.paid_at ? "paid" : r.status === "approved" ? "unpaid" : r.status;
+      it.lines = it.type === "petty" ? linesByClaim[r.id] || [] : [];
+      it.batch = r.batch_id ? batchMap[r.batch_id] || null : null;
+      it.paidOn = (it.batch && it.batch.paid_date) || (r.paid_at ? String(r.paid_at).slice(0, 10) : "");
+      it.detail =
+        it.type === "trip"
+          ? [r.vehicle_option, r.total_km != null ? `${r.total_km} km` : "", (r.claim_items || []).join("/"), r.claim_items_other]
+              .filter(Boolean).join(" · ")
+          : it.type === "petty"
+          ? `${it.lines.length} line${it.lines.length === 1 ? "" : "s"}`
+          : [r.payee_name, r.ref_number].filter(Boolean).join(" · ");
+    });
+    return { items, nameMap };
+  }
+
+  // what the current filters leave on screen, in the chosen order
+  function expFiltered() {
+    const { items } = state.expAll;
+    const q = (state.expSearch || "").trim().toLowerCase();
+    const list = items.filter((it) => {
+      if (state.expType && it.type !== state.expType) return false;
+      if (state.expState !== "all" && it.state !== state.expState) return false;
+      if (state.expWho && it.r.requester_id !== state.expWho) return false;
+      if (state.expFrom && it.date < state.expFrom) return false;
+      if (state.expTo && it.date > state.expTo) return false;
+      if (!q) return true;
+      const hay = [it.who, it.title, it.detail, it.r.description, it.r.review_note, it.r.cancel_reason,
+        it.r.payee_name, it.r.ref_number, it.r.claimant_name, ...it.lines.map((l) => l.keterangan)]
+        .join(" ").toLowerCase();
+      return hay.includes(q);
+    });
+    const SORTS = {
+      date: (it) => it.date || "",
+      type: (it) => it.type,
+      requester: (it) => it.who.toLowerCase(),
+      title: (it) => it.title.toLowerCase(),
+      amount: (it) => (it.idr == null ? -1 : it.idr),
+      status: (it) => it.state,
+      paid: (it) => it.paidOn || "",
+    };
+    const sort = state.expSort;
+    const val = SORTS[sort.key] || SORTS.date;
+    const dir = sort.dir === "asc" ? 1 : -1;
+    return list.sort((a, b) => (val(a) < val(b) ? -dir : val(a) > val(b) ? dir : 0));
+  }
+
+  async function renderExpenses() {
+    const root = $("#view-root");
+    if (!state.expAll) {
+      root.innerHTML = '<div class="loading">Loading expenses…</div>';
+      try { state.expAll = await loadExpenses(); }
+      catch (err) { root.innerHTML = errorBox(friendlyError(err)); return; }
+    }
+    const { items, nameMap } = state.expAll;
+    const rows = expFiltered();
+    const sort = state.expSort;
+
+    // totals in rupiah; foreign items with no rupiah figure are counted, not summed
+    const sum = (list, f) => list.reduce((s, it) => s + (f(it) || 0), 0);
+    const totalIdr = sum(rows, (it) => it.idr);
+    const paidIdr = sum(rows.filter((it) => it.state === "paid"), (it) => it.idr);
+    const owedIdr = sum(rows.filter((it) => it.state === "unpaid"), (it) =>
+      it.idr == null ? null : it.idr * (remainingOf(expKind(it), it.r) / (it.amount || 1)));
+    const unknown = rows.filter((it) => it.idr == null).length;
+    const byType = Object.keys(EXP_TYPES).map((t) => [t, rows.filter((it) => it.type === t).length]);
+
+    const pill = (key, label) =>
+      `<button class="filter-pill ${state.expState === key ? "active" : ""}" data-state="${key}">${label}</button>`;
+    const th = thMaker({ sort });
+    const people = [...new Set(items.map((it) => it.r.requester_id).filter(Boolean))]
+      .map((id) => [id, nameMap[id] || "—"]).sort((a, b) => a[1].localeCompare(b[1]));
+    const opt = (v, cur, label) => `<option value="${esc(v)}"${cur === v ? " selected" : ""}>${esc(label)}</option>`;
+    const narrowed = state.expSearch || state.expType || state.expWho || state.expFrom || state.expTo;
+
+    root.innerHTML = `
+      <div class="toolbar">
+        <input id="exp-search" placeholder="Search purpose, keterangan, payee, requester…" value="${esc(state.expSearch)}" style="max-width:320px" />
+        ${pill("all", "All")}${pill("paid", "Paid")}${pill("unpaid", "Approved – unpaid")}${pill("pending", "Pending")}${pill("rejected", "Rejected")}${pill("cancelled", "Cancelled")}
+        <span class="spacer"></span>
+        <button class="btn btn-ghost btn-sm" id="exp-refresh">↻ Refresh</button>
+        <button class="btn btn-ghost btn-sm" id="exp-report">🖨️ Report</button>
+        <button class="btn btn-ghost btn-sm" id="exp-export">⬇️ Export CSV</button>
+      </div>
+      <div class="toolbar filters">
+        <select id="exp-type">${opt("", state.expType, "All types")}${Object.entries(EXP_TYPES).map(([k, l]) => opt(k, state.expType, l)).join("")}</select>
+        <select id="exp-who">${opt("", state.expWho, "Everyone")}${people.map(([id, n]) => opt(id, state.expWho, n)).join("")}</select>
+        <label class="daterange">Date from <input type="date" id="exp-from" value="${esc(state.expFrom)}" /></label>
+        <label class="daterange">to <input type="date" id="exp-to" value="${esc(state.expTo)}" /></label>
+        ${narrowed ? `<span class="fx-hint">${rows.length} of ${items.length}</span><button class="btn btn-ghost btn-sm" id="exp-clear">✕ Clear filters</button>` : ""}
+      </div>
+      <div class="exp-tiles">
+        <div class="exp-tile"><div class="k">Items</div><div class="v">${rows.length}</div><div class="f">${byType.map(([t, n]) => `${n} ${EXP_TYPES[t].replace(/^\S+\s/, "").toLowerCase()}`).join(" · ")}</div></div>
+        <div class="exp-tile"><div class="k">Total</div><div class="v">${money(totalIdr, "IDR")}</div><div class="f">${unknown ? `${unknown} foreign without a rupiah figure` : "all lines"}</div></div>
+        <div class="exp-tile"><div class="k">Paid</div><div class="v">${money(paidIdr, "IDR")}</div><div class="f">${rows.filter((it) => it.state === "paid").length} items settled</div></div>
+        <div class="exp-tile${owedIdr ? " warn" : ""}"><div class="k">Still to pay</div><div class="v">${money(owedIdr, "IDR")}</div><div class="f">${rows.filter((it) => it.state === "unpaid").length} approved, unpaid</div></div>
+      </div>
+      ${
+        rows.length
+          ? `<div class="card table-wrap"><table>
+              <thead><tr>${th("date", "Date")}${th("type", "Type")}${th("requester", "Requester")}${th("title", "Description")}${th("amount", "Amount")}${th("status", "Status")}${th("paid", "Paid")}</tr></thead>
+              <tbody>${rows.map((it) => `
+                <tr data-id="${it.id}" data-type="${it.type}">
+                  <td style="white-space:nowrap">${fmtDate(it.date)}</td>
+                  <td><span class="type-tag ${it.type === "expense" ? "payment" : it.type}">${EXP_TYPES[it.type].replace(/^\S+\s/, "")}</span></td>
+                  <td>${esc(it.who)}</td>
+                  <td>${esc(it.title)}${it.detail ? `<div class="paytiny">${esc(it.detail)}</div>` : ""}</td>
+                  <td class="amount">${
+                    it.currency === "IDR" || it.idr == null
+                      ? money(it.amount, it.currency)
+                      : `${money(it.idr, "IDR")}<div class="paytiny">${money(it.amount, it.currency)}${it.r.idr_actual ? " paid" : " est."}</div>`
+                  }${isPartiallyPaid(it.r) ? `<div class="paytiny">part-paid ${money(paidSoFar(it.r), it.currency)}</div>` : ""}</td>
+                  <td><span class="badge ${it.state === "unpaid" ? "approved" : it.state === "paid" ? "approved" : it.state}">${
+                    it.state === "paid" ? "paid" : it.state === "unpaid" ? "approved" : it.state
+                  }</span></td>
+                  <td style="white-space:nowrap">${it.paidOn ? fmtDate(it.paidOn) : '<span class="paytiny">—</span>'}</td>
+                </tr>`).join("")}</tbody></table></div>`
+          : '<div class="card panel empty"><div class="big">🔍</div><h3>Nothing matches</h3><p class="sub">Try a different search or filter.</p></div>'
+      }`;
+
+    // ---- wiring ----
+    const search = $("#exp-search");
+    let typing;
+    search.addEventListener("input", () => {
+      clearTimeout(typing);
+      typing = setTimeout(async () => {
+        state.expSearch = search.value;
+        await renderExpenses();
+        const again = $("#exp-search");
+        if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+      }, 250);
+    });
+    $$(".filter-pill", root).forEach((p) => p.addEventListener("click", () => { state.expState = p.dataset.state; renderExpenses(); }));
+    $$("th.sortable", root).forEach((hd) =>
+      hd.addEventListener("click", () => {
+        const key = hd.dataset.sort;
+        state.expSort = sort.key === key
+          ? { key, dir: sort.dir === "asc" ? "desc" : "asc" }
+          : { key, dir: ["date", "amount", "paid"].includes(key) ? "desc" : "asc" };
+        renderExpenses();
+      })
+    );
+    const onFilter = (id, prop) => $("#" + id)?.addEventListener("change", (e) => { state[prop] = e.target.value; renderExpenses(); });
+    onFilter("exp-type", "expType"); onFilter("exp-who", "expWho"); onFilter("exp-from", "expFrom"); onFilter("exp-to", "expTo");
+    $("#exp-clear")?.addEventListener("click", () => {
+      state.expSearch = state.expType = state.expWho = state.expFrom = state.expTo = ""; renderExpenses();
+    });
+    $("#exp-refresh").addEventListener("click", () => { state.expAll = null; renderExpenses(); });
+    $("#exp-export").addEventListener("click", () => exportExpensesCsv(rows));
+    $("#exp-report").addEventListener("click", () => printExpenseReport(rows));
+    $$("tbody tr", root).forEach((tr) =>
+      tr.addEventListener("click", () => {
+        const it = rows.find((x) => x.id === tr.dataset.id && x.type === tr.dataset.type);
+        if (it) openDetail(it.r, true, nameMap, expKind(it));
+      })
+    );
+  }
+
+  // Two files: one row per item with its type-specific detail, and every
+  // petty cash line on its own row — the thing the accountant codes from.
+  function exportExpensesCsv(rows) {
+    if (!rows.length) { toast("Nothing to export", "error"); return; }
+    const num = (v) => (v == null || v === "" ? "" : Math.round(Number(v) * 100) / 100);
+    const itemsCsv = [[
+      "Type", "Date", "Requester", "Description", "Detail", "Amount", "Currency", "Amount (Rp)",
+      "Status", "Submitted", "Reviewed", "Paid date", "Payment ref", "Review note", "Cancel reason",
+      "Vehicle", "Km", "Trip value", "Additional fees", "Payee", "Ref no",
+    ]];
+    rows.forEach((it) => {
+      const r = it.r;
+      itemsCsv.push([
+        EXP_TYPES[it.type].replace(/^\S+\s/, ""), it.date || "", it.who, it.title, it.detail,
+        num(it.amount), it.currency, it.idr == null ? "" : num(it.idr),
+        EXP_STATES[it.state] || it.state, String(r.created_at || "").slice(0, 10), String(r.reviewed_at || "").slice(0, 10),
+        it.paidOn, (it.batch && it.batch.bank_ref) || "", r.review_note || "", r.cancel_reason || "",
+        it.type === "trip" ? r.vehicle_option || "" : "", it.type === "trip" ? num(r.total_km) : "",
+        it.type === "trip" ? num(r.trip_value) : "", it.type === "trip" ? num(r.additional_fees) : "",
+        it.type === "expense" ? r.payee_name || "" : "", it.type === "expense" ? r.ref_number || "" : "",
+      ]);
+    });
+    const linesCsv = [["Claim date", "Requester", "Claim title", "#", "Keterangan", "Amount", "Claim status", "Paid date"]];
+    rows.filter((it) => it.type === "petty").forEach((it) =>
+      it.lines.forEach((l, i) =>
+        linesCsv.push([it.date || "", it.who, it.title, i + 1, l.keterangan || "", num(l.amount), EXP_STATES[it.state] || it.state, it.paidOn])
+      )
+    );
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCsv(`GS_expenses_${stamp}.csv`, itemsCsv);
+    if (linesCsv.length > 1) setTimeout(() => downloadCsv(`GS_expenses_petty_lines_${stamp}.csv`, linesCsv), 600);
+    toast(`Exported ${rows.length} item(s)${linesCsv.length > 1 ? ` and ${linesCsv.length - 1} petty cash line(s)` : ""} ✔`);
+  }
+
+  // A printable report of the filtered list: totals by type, by person and by
+  // month, then the lines — the page an accountant or a director reads.
+  function printExpenseReport(rows) {
+    if (!rows.length) { toast("Nothing to report", "error"); return; }
+    const company = cfg.COMPANY_NAME || "Company";
+    const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
+    const preparedBy = state.profile.full_name || state.profile.email || "";
+    const period = state.expFrom || state.expTo
+      ? `${state.expFrom ? fmtDate(state.expFrom) : "start"} – ${state.expTo ? fmtDate(state.expTo) : "today"}`
+      : "all dates";
+    const scope = [
+      state.expType ? EXP_TYPES[state.expType].replace(/^\S+\s/, "") : "all types",
+      state.expState === "all" ? "all statuses" : EXP_STATES[state.expState],
+      state.expWho ? (state.expAll.nameMap[state.expWho] || "") : "everyone",
+      state.expSearch ? `matching “${state.expSearch}”` : "",
+    ].filter(Boolean).join(" · ");
+
+    const group = (keyOf, labelOf) => {
+      const m = new Map();
+      rows.forEach((it) => {
+        const k = keyOf(it);
+        const g = m.get(k) || { label: labelOf(it), n: 0, idr: 0, unknown: 0 };
+        g.n++; if (it.idr == null) g.unknown++; else g.idr += it.idr;
+        m.set(k, g);
+      });
+      return [...m.values()].sort((a, b) => b.idr - a.idr);
+    };
+    const byType = group((it) => it.type, (it) => EXP_TYPES[it.type].replace(/^\S+\s/, ""));
+    const byWho = group((it) => it.r.requester_id, (it) => it.who);
+    const byMonth = group((it) => (it.date || "").slice(0, 7), (it) =>
+      it.date ? new Date(it.date + "T12:00:00").toLocaleDateString("en-GB", { month: "long", year: "numeric" }) : "undated"
+    ).sort((a, b) => a.label.localeCompare(b.label));
+    const total = rows.reduce((s, it) => s + (it.idr || 0), 0);
+    const unknown = rows.filter((it) => it.idr == null).length;
+
+    const sumTable = (title, groups) => `
+      <h2>${esc(title)}</h2>
+      <table><thead><tr><th>${esc(title.replace(/^By /, ""))}</th><th class="r">Items</th><th class="r">Amount (Rp)</th><th class="r">Share</th></tr></thead>
+      <tbody>${groups.map((g) => `<tr><td>${esc(g.label)}${g.unknown ? ` <span class="part">+ ${g.unknown} foreign, no rupiah figure</span>` : ""}</td><td class="r">${g.n}</td><td class="r">${esc(money(g.idr, "IDR"))}</td><td class="r">${total ? (g.idr / total * 100).toFixed(1) : "0.0"}%</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td>Total</td><td class="r">${rows.length}</td><td class="r">${esc(money(total, "IDR"))}</td><td class="r">100%</td></tr></tfoot></table>`;
+
+    const lines = [...rows].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    const doc = `<!doctype html><html><head><meta charset="utf-8"><title>Expense Report — ${esc(period)}</title>
+      <style>
+        :root { color-scheme: light; }
+        * { box-sizing: border-box; }
+        html, body { background: #ffffff; }
+        body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #14211b; margin: 32px; }
+        .head { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:3px solid #157347; padding-bottom:14px; margin-bottom:20px; }
+        .company { font-size:22px; font-weight:800; color:#0f5132; }
+        .doc-title { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:#5f6f68; margin-top:2px; }
+        .meta { text-align:right; font-size:12px; color:#5f6f68; }
+        .who { background:#e8f5ee; border-radius:10px; padding:14px 16px; margin-bottom:18px; }
+        .who .n { font-size:17px; font-weight:700; }
+        .who .r { font-size:14px; margin-top:4px; }
+        h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:#5f6f68; margin:22px 0 6px; }
+        table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:6px; page-break-inside:auto; }
+        th, td { text-align:left; padding:7px 9px; border-bottom:1px solid #e2e8e4; vertical-align:top; }
+        th { background:#f4f7f5; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#5f6f68; }
+        td.r, th.r { text-align:right; font-variant-numeric: tabular-nums; white-space:nowrap; }
+        tfoot td { font-weight:700; background:#f4f7f5; }
+        tr { page-break-inside: avoid; }
+        .part { font-size:10px; color:#8a5a12; white-space:normal; }
+        .small { font-size:11px; color:#5f6f68; }
+        .sign { display:flex; gap:60px; margin-top:40px; font-size:12px; color:#5f6f68; }
+        .sign .box { flex:1; }
+        .sign .line { border-top:1px solid #9aa8a1; margin-top:44px; padding-top:6px; }
+        .toolbar { margin-bottom:18px; }
+        .btn { font:inherit; font-weight:600; background:#157347; color:#fff; border:0; border-radius:8px; padding:9px 16px; cursor:pointer; }
+        @media print { .toolbar { display:none; } body { margin:0; } h2 { page-break-after: avoid; } }
+      </style></head><body>
+      <div class="toolbar"><button class="btn" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
+      <div class="head">
+        <div><div class="company">${esc(company)}</div><div class="doc-title">Expense report · reimbursements &amp; non-supplier payments</div></div>
+        <div class="meta">Printed: ${esc(today)}</div>
+      </div>
+      <div class="who">
+        <div class="n">${esc(period)}</div>
+        <div class="r">${esc(scope)} · ${rows.length} item${rows.length === 1 ? "" : "s"} · <b>${esc(money(total, "IDR"))}</b>${unknown ? ` <span class="part">+ ${unknown} foreign with no rupiah figure</span>` : ""}</div>
+      </div>
+      ${sumTable("By type", byType)}
+      ${sumTable("By requester", byWho)}
+      ${sumTable("By month", byMonth)}
+      <h2>Lines</h2>
+      <table>
+        <thead><tr><th>Date</th><th>Type</th><th>Requester</th><th>Description</th><th class="r">Amount</th><th>Status</th><th>Paid</th></tr></thead>
+        <tbody>${lines.map((it) => `<tr>
+          <td style="white-space:nowrap">${esc(fmtDate(it.date))}</td>
+          <td>${esc(EXP_TYPES[it.type].replace(/^\S+\s/, ""))}</td>
+          <td>${esc(it.who)}</td>
+          <td>${esc(it.title)}${it.detail ? `<div class="small">${esc(it.detail)}</div>` : ""}${
+            it.type === "petty" && it.lines.length
+              ? `<div class="small">${it.lines.map((l) => `${esc(l.keterangan)} — ${esc(money(l.amount, "IDR"))}`).join("<br>")}</div>` : ""
+          }</td>
+          <td class="r">${it.idr == null ? esc(money(it.amount, it.currency)) : esc(money(it.idr, "IDR"))}${
+            it.currency !== "IDR" ? `<div class="small">${esc(money(it.amount, it.currency))}</div>` : ""
+          }</td>
+          <td>${esc(EXP_STATES[it.state] || it.state)}</td>
+          <td style="white-space:nowrap">${it.paidOn ? esc(fmtDate(it.paidOn)) : "—"}${it.batch && it.batch.bank_ref ? `<div class="small">${esc(it.batch.bank_ref)}</div>` : ""}</td>
+        </tr>`).join("")}</tbody>
+        <tfoot><tr><td colspan="4">Total</td><td class="r">${esc(money(total, "IDR"))}</td><td colspan="2"></td></tr></tfoot>
+      </table>
+      <div class="sign">
+        <div class="box"><div class="line">Prepared by${preparedBy ? " — " + esc(preparedBy) : ""}</div></div>
+        <div class="box"><div class="line">Reviewed by</div></div>
+      </div>
+      <script>window.addEventListener('load',function(){setTimeout(function(){window.print();},250);});<\/script>
+      </body></html>`;
+
+    const w = window.open("", "_blank");
+    if (!w) { toast("Allow pop-ups for this site to print", "error"); return; }
+    w.document.open(); w.document.write(doc); w.document.close();
   }
 
   // ==========================================================================
@@ -4008,7 +4384,7 @@
         .in("id", ids);
       if (error) { toast(friendlyError(error), "error"); return; }
       toast(`${ids.length} item(s) ${status} ${status === "approved" ? "✔" : ""}`, status === "approved" ? "ok" : "error");
-      state.purchAll = null;
+      state.purchAll = null; state.expAll = null;
       if (mod === "payment") syncToGoogleSheet({ silent: true });
       renderAdmin();
     };
@@ -4538,7 +4914,7 @@
           .update({ status: "approved", cancelled_by: null, cancelled_at: null, cancel_reason: null })
           .eq("id", r.id);
         if (error) { toast(friendlyError(error), "error"); return; }
-        state.purchAll = null;
+        state.purchAll = null; state.expAll = null;
         closeModal();
         toast("Restored — it is back in Disburse");
         route();
@@ -4636,7 +5012,7 @@
     }
     closeModal();
     toast(status === "approved" ? "Approved ✔" : "Rejected", status === "approved" ? "ok" : "error");
-    state.purchAll = null;
+    state.purchAll = null; state.expAll = null;
     if (type === "payment") syncToGoogleSheet({ silent: true });
     renderAdmin();
   }
@@ -4912,7 +5288,7 @@
         })
         .eq("id", bt.id);
       if (error) { msg.textContent = friendlyError(error); msg.className = "msg error"; return; }
-      state.purchAll = null;
+      state.purchAll = null; state.expAll = null;
       closeModal();
       toast("Payment corrected — everything it settled is now dated " + fmtDate(paidDate));
       route();
@@ -4935,7 +5311,7 @@
     if (!r.amount || Number(r.amount) <= 0) { toast("This request has no amount to convert", "error"); return false; }
     const { error } = await sb.from("payment_requests").update(patch).eq("id", r.id);
     if (error) { toast("Repricing failed: " + error.message, "error"); return false; }
-    state.purchAll = null;
+    state.purchAll = null; state.expAll = null;
     return true;
   }
 
@@ -5054,7 +5430,7 @@
         const refs = items.map((it) => it.r.ref_number).filter(Boolean).join(", ");
         syncFileToDrive(file, `${paidDate} - payment proof${refs ? " - " + safeName(refs) : ""}${bankRef ? " - " + safeName(bankRef) : ""}${ext}`);
       }
-      state.purchAll = null; // purchasing book must reload
+      state.purchAll = null; state.expAll = null; // purchasing book must reload
       syncToGoogleSheet({ silent: true });
 
       closeModal();
@@ -5096,6 +5472,7 @@
       .eq("id", r.id);
     if (error) { toast(friendlyError(error), "error"); return; }
     state.purchAll = null;
+    state.expAll = null;
     toast("Payment cancelled — the requester can see why");
     route();
   }

@@ -516,3 +516,12 @@ tbody tr:hover { background: #fafcfb; cursor: pointer; }
 /* Petty Cash Coder lives in its own page inside the admin view */
 .coder-frame { width: 100%; height: calc(100vh - 150px); min-height: 560px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
 @media (max-width: 720px) { .coder-frame { height: calc(100vh - 190px); } }
+
+/* expense tracker summary tiles */
+.exp-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 0 0 14px; }
+.exp-tile { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.exp-tile .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 700; }
+.exp-tile .v { font-size: 19px; font-weight: 800; color: var(--green-700); font-variant-numeric: tabular-nums; margin-top: 3px; line-height: 1.2; }
+.exp-tile .f { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.exp-tile.warn { border-color: #e2c489; background: var(--amber-bg); }
+.exp-tile.warn .v { color: var(--amber); }
