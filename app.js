@@ -4029,6 +4029,23 @@
     return state.master;
   }
 
+  // Brand / Type / Version / Spec 1-3, the way the specification chat laid it
+  // out. For engine results they are read off the GS name; the AI fills them
+  // in directly.
+  function nameParts(r) {
+    if (r.version != null && r.specs) return r;
+    const name = String(r.name || "");
+    const paren = (name.match(/\(([^)]*)\)\s*$/) || [])[1] || "";
+    let head = name.replace(/\s*\([^)]*\)\s*$/, "");
+    if (r.brand && head.toUpperCase().startsWith(r.brand.toUpperCase())) head = head.slice(r.brand.length).trim();
+    if (r.cat && head.toUpperCase().startsWith(r.cat.toUpperCase())) head = head.slice(r.cat.length).trim();
+    head = head.replace(/^SHAFT (DRIVER|IRON|HYBRID|PUTTER|FW)( \/ FAIRWAY WOOD)?\s*/i, "").replace(/^(DRIVER|FW|HYBRID|IRON|WEDGE) HEAD\s*/i, "").trim();
+    head = head.replace(/^\/\s*FAIRWAY WOOD\s*/i, "").trim();   // "SHAFT DRIVER / FAIRWAY WOOD" names
+    r.version = head;
+    r.specs = paren ? paren.split("/").map((x) => x.trim()).filter(Boolean).slice(0, 3) : [];
+    return r;
+  }
+
   async function renderNames() {
     const root = $("#view-root");
     root.innerHTML = '<div class="loading">Loading the product master…</div>';
@@ -4102,17 +4119,27 @@
                   <button class="btn btn-ghost btn-sm" id="nf-copy">📋 Copy table</button>
                 </div>
                 <div class="card table-wrap"><table class="nf-table">
-                  <thead><tr><th>#</th><th>Qty</th><th>Original description</th><th>GS name</th><th>GS SKU</th><th>Status</th><th>Nearest in master</th></tr></thead>
-                  <tbody>${shown.map((r) => `
+                  <thead><tr><th>#</th><th>Qty</th><th>Original</th><th>Brand</th><th>Type</th><th>Version</th><th>Spec 1</th><th>Spec 2</th><th>Spec 3</th><th>GS name · SKU</th><th>Status</th></tr></thead>
+                  <tbody>${shown.map(nameParts).map((r) => `
                     <tr class="nf-${r.status === "in master" ? "ok" : r.status === "NEW" ? "new" : "unk"}">
                       <td class="paytiny">${r.i + 1}</td>
                       <td class="amount">${r.qty}</td>
-                      <td>${esc(r.text)}</td>
-                      <td><div style="font-weight:600">${esc(r.name || "—")}</div><div class="paytiny">${esc([r.brand, r.cat].filter(Boolean).join(" · "))}${r.reason ? " · " + esc(r.reason) : ""}</div></td>
-                      <td class="paytiny" style="white-space:nowrap">${esc(r.sku || "—")}</td>
+                      <td>${esc(r.text)}${
+                        (r.nearest || []).length
+                          ? `<details class="nf-near"><summary>nearest in master</summary>${(r.nearest || []).slice(0, 3).map((n) =>
+                              `<div><b>${esc(n.sku)}</b> ${esc(n.name)}<div style="color:var(--amber)">${esc(n.differs)}</div></div>`).join("")}</details>`
+                          : ""
+                      }</td>
+                      <td>${esc(r.brand || "—")}</td>
+                      <td>${esc(r.cat || "—")}</td>
+                      <td>${esc(r.version || "—")}</td>
+                      <td>${esc((r.specs || [])[0] || "")}</td>
+                      <td>${esc((r.specs || [])[1] || "")}</td>
+                      <td>${esc((r.specs || [])[2] || "")}</td>
+                      <td><div style="font-weight:600">${esc(r.name || "—")}</div><div class="paytiny" style="white-space:nowrap">${esc(r.sku || "—")}</div>${
+                        r.note ? `<div class="nf-note">${esc(r.note)}</div>` : ""
+                      }</td>
                       <td><span class="badge ${r.status === "in master" ? "approved" : r.status === "NEW" ? "pending" : "rejected"}">${esc(r.status)}</span>${r.ai ? '<div class="paytiny">✨ AI</div>' : ""}</td>
-                      <td class="paytiny">${(r.nearest || []).slice(0, 3).map((n) =>
-                        `<div><b>${esc(n.sku)}</b> ${esc(n.name)}<div style="color:var(--amber)">${esc(n.differs)}</div></div>`).join("") || "—"}</td>
                     </tr>`).join("")}</tbody>
                 </table></div>`
               : `<div class="card panel empty"><div class="big">🔎</div><h3>Paste lines, or pick an invoice</h3>
@@ -4141,8 +4168,9 @@
     $("#nf-clear").addEventListener("click", () => { state.namesInput = ""; state.namesResults = null; renderNames(); });
     $("#nf-onlynew")?.addEventListener("change", (e) => { state.namesOnlyNew = e.target.checked; renderNames(); });
     $("#nf-copy")?.addEventListener("click", () => {
-      const rows = [["#", "Qty", "Original", "GS name", "GS SKU", "Status", "Brand", "Item category", "Nearest"]]
-        .concat(shown.map((r) => [r.i + 1, r.qty, r.text, r.name, r.sku, r.status, r.brand, r.cat, (r.nearest || []).map((n) => `${n.sku} ${n.name} (${n.differs})`).join(" | ")]));
+      const rows = [["#", "Qty", "Original", "Brand", "Type", "Version", "Spec 1", "Spec 2", "Spec 3", "GS name", "GS SKU", "Status", "Note", "Nearest in master"]]
+        .concat(shown.map(nameParts).map((r) => [r.i + 1, r.qty, r.text, r.brand, r.cat, r.version, (r.specs || [])[0] || "", (r.specs || [])[1] || "", (r.specs || [])[2] || "",
+          r.name, r.sku, r.status, r.note || "", (r.nearest || []).map((n) => `${n.sku} ${n.name} (${n.differs})`).join(" | ")]));
       const tsv = rows.map((row) => row.map((c) => String(c ?? "").replace(/\t|\n/g, " ")).join("\t")).join("\n");
       navigator.clipboard.writeText(tsv).then(() => toast("Table copied — paste into a sheet")).catch(() => toast("Could not copy", "error"));
     });
@@ -4153,36 +4181,52 @@
   // The deterministic engine is right on clean lines; the AI reader settles
   // the rest with the nearest master items in front of it. Only lines not
   // already matched are sent, with their candidates, so the call stays small.
-  async function refineNamesWithAi(btn) {
+  async function refineNamesWithAi(btnEl) {
+    let btn = btnEl;
     const results = state.namesResults || [];
     const todo = results.filter((r) => r.status !== "in master");
     if (!todo.length) { toast("Every line is already matched"); return; }
-    btn.disabled = true; btn.textContent = `✨ Asking about ${todo.length}…`;
+    btn.disabled = true;
     try {
-      const payload = todo.slice(0, 60).map((r) => ({
-        i: r.i, description: r.text, draft: { status: r.status, name: r.name, sku: r.sku },
-        candidates: (r.nearest || []).map((n) => ({ sku: n.sku, name: n.name })),
-      }));
-      const { data, error } = await sb.functions.invoke("swift-action", { body: { mode: "match_names", lines: payload } });
-      if (error) {
-        let detail = "";
-        try { detail = (await error.context?.json())?.error || ""; } catch { /* ignore */ }
-        throw new Error(detail || "The AI reader is not available — the parse-po function needs redeploying with match_names.");
+      // a few lines per call: the reader may search the web for each one, and
+      // the function has to answer inside the edge time limit
+      const BATCH = 8;
+      let done = 0, changed = 0, searches = 0;
+      for (let at = 0; at < todo.length; at += BATCH) {
+        const slice = todo.slice(at, at + BATCH);
+        btn.textContent = `✨ Identifying ${done + 1}–${Math.min(done + slice.length, todo.length)} of ${todo.length}…`;
+        const payload = slice.map((r) => ({
+          i: r.i, description: r.text, draft: { status: r.status, name: r.name, sku: r.sku },
+          candidates: (r.nearest || []).map((n) => ({ sku: n.sku, name: n.name })),
+        }));
+        const { data, error } = await sb.functions.invoke("swift-action", { body: { mode: "match_names", lines: payload } });
+        if (error) {
+          let detail = "";
+          try { detail = (await error.context?.json())?.error || ""; } catch { /* ignore */ }
+          throw new Error(detail || "The AI reader is not available — the parse-po function needs redeploying with match_names.");
+        }
+        if (data?.error) throw new Error(data.error);
+        searches += Number(data.searches) || 0;
+        const byI = Object.fromEntries((data.results || []).map((x) => [x.i, x]));
+        slice.forEach((r) => {
+          const a = byI[r.i]; if (!a) return;
+          const status = a.status === "in master" ? "in master" : a.status === "new" ? "NEW" : "unknown";
+          if (status !== r.status || (a.gs_sku && a.gs_sku !== r.sku) || (a.gs_name && a.gs_name !== r.name)) changed++;
+          Object.assign(r, {
+            status, sku: a.gs_sku || r.sku, name: a.gs_name || r.name, brand: a.brand || r.brand, cat: a.type || r.cat,
+            version: a.version || "", specs: [a.spec1, a.spec2, a.spec3].map((x) => String(x || "").trim()),
+            note: a.note || "", ai: true,
+          });
+        });
+        done += slice.length;
+        renderNames();                      // show each batch as it lands
+        btn = $("#nf-ai"); if (btn) { btn.disabled = true; }
       }
-      if (data?.error) throw new Error(data.error);
-      const byI = Object.fromEntries((data.results || []).map((x) => [x.i, x]));
-      let changed = 0;
-      results.forEach((r) => {
-        const a = byI[r.i]; if (!a) return;
-        const status = a.status === "in master" ? "in master" : a.status === "new" ? "NEW" : "unknown";
-        if (status !== r.status || a.sku !== r.sku || a.name !== r.name) changed++;
-        Object.assign(r, { status, sku: a.sku || r.sku, name: a.name || r.name, brand: a.brand || r.brand, cat: a.item_category || r.cat, reason: a.reason || "", ai: true });
-      });
-      toast(`AI reviewed ${todo.length} line(s) · ${changed} changed`);
+      toast(`AI identified ${todo.length} line(s) · ${changed} changed${searches ? ` · ${searches} web search${searches === 1 ? "" : "es"}` : ""}`);
       renderNames();
     } catch (err) {
       toast(err.message || "AI refine failed", "error");
-      btn.disabled = false; btn.textContent = "✨ Refine with AI";
+      btn = $("#nf-ai"); if (btn) { btn.disabled = false; btn.textContent = "✨ Refine with AI"; }
     }
   }
 

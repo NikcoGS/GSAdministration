@@ -540,3 +540,6 @@ tr.nf-ok td:first-child { box-shadow: inset 3px 0 0 var(--green-badge); }
 tr.nf-new td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
 tr.nf-unk td:first-child { box-shadow: inset 3px 0 0 var(--red); }
 @media (max-width: 900px) { .nf-grid { grid-template-columns: 1fr; } }
+.nf-note { font-size: 12px; color: var(--amber); margin-top: 3px; font-style: italic; }
+.nf-near { margin-top: 4px; font-size: 12px; color: var(--muted); }
+.nf-near summary { cursor: pointer; color: var(--green-600); font-weight: 600; }

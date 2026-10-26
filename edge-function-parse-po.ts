@@ -1,6 +1,6 @@
 // ============================================================================
 // GS Operational System — Edge Function: parse-po  (deployed slug: swift-action)
-// v12 — modes: receiving (default), invoice, payment_proof, match_names (Name Finder)
+// v13 — modes: receiving (default), invoice, payment_proof, match_names (Name Finder: Opus 5.5 + web search)
 // v2 — two modes:
 //   * default (receiving): { supplier, ref_number, items:[{item_name, qty, unit}] }
 //   * mode "invoice" (supplier payment): also extracts prices + currency and
@@ -99,16 +99,69 @@ Extract:
 Reply with ONLY the JSON object, no other text:
 {"supplier": ..., "ref_number": ..., "currency": ..., "items": [...], "charges": [...], "total": ..., "invoice_date": ..., "due_date": ..., "buyer": ..., "payment_terms": ..., "gross_subtotal": ..., "discount_total": ..., "bank_name": ..., "bank_account_number": ..., "bank_account_name": ...}`;
 
-const NAMES_PROMPT = `You are matching supplier product descriptions to the Golf Solutions product master (golf club components: heads, shafts, grips).
-For EACH line you get the description and up to 8 nearest master products (sku + name) found by a keyword search, plus a draft proposal.
-Decide for each line:
-- "in master": the description is the SAME product and SAME spec (model, loft, flex, weight, colour, hand, wood/iron number) as one master item → return that sku.
-- "new": the model exists or the brand is clear but this exact spec is not in the master → return a proposed name and sku IN THE HOUSE CONVENTION:
-    name = "<BRAND> <ITEM CATEGORY> <MODEL> (<attributes separated by " / ">)", attributes in the same order the master uses for that model (look at the nearest items).
-    sku  = "<CATEGORY PREFIX>-<BRAND CODE>-<MODEL CODE>-<attribute codes>", reusing the model code and brand code from the nearest master items; colour codes BLK BLU RED GRN ORG WHT GLD SLV GRY CHR.
-- "unknown": not enough information to tell what it is.
-Never invent a spec that is not in the description. Keep the master's exact spelling of model names.
-Reply with ONLY JSON: {"results":[{"i":number,"status":"in master"|"new"|"unknown","sku":string,"name":string,"brand":string,"item_category":string,"reason":string}]}`;
+const NAMES_PROMPT = `You identify golf club components (heads, shafts, grips, accessories) from the short descriptions a supplier, a stock sheet or a fitter writes, and name them in the Golf Solutions house convention.
+
+For EACH line you get: the description, a draft from a keyword matcher, and up to 8 nearest products from the Golf Solutions master (sku + name). The master is the reference for spelling of models, the item-category names, and the attribute order used for each model.
+
+Work out what the line really is. Where the description is ambiguous or uses a model label that is not a spec (e.g. "MODUS 105" is a model name — that shaft weighs 111g; "Ventus TR 6" is a weight class, not grams), use web search on the manufacturer's site to confirm the real specification. At most two searches per line; none when the nearest master items already settle it.
+
+Then for each line return:
+- "status": "in master" when the line is the SAME product and SAME spec as a master item (the line may say less than the master — a missing hand or flex is fine; a different loft/flex/weight/colour is not) → "gs_sku" is that master sku and "gs_name" that master name, exactly.
+  "new" when the brand or model is clear but this exact spec is not in the master → propose "gs_name" and "gs_sku" in the house convention.
+  "unknown" when it cannot be identified.
+- "brand": manufacturer as the master spells it (NIPPON SHAFT, GRAPHITE DESIGN, MITSUBISHI CHEMICAL, TRUE TEMPER, GOLF PRIDE, …).
+- "type": the item category as the master names it (SHAFT IRON, SHAFT DRIVER, SHAFT HYBRID, SHAFT PUTTER, DRIVER HEAD, FW HEAD, HYBRID HEAD, IRON HEAD, WEDGE HEAD, GRIP, PUTTER GRIP, COMPONENT, GOLF BAG, GLOVE, ACCESSORY). A wedge shaft is SHAFT IRON unless the master shows otherwise.
+- "version": the model as the manufacturer writes it (e.g. "N.S.PRO MODUS³ Wedge 105", "TOUR AD DI", "G440 MAX").
+- "spec1", "spec2", "spec3": the three specs that identify the unit, most important first — weight in g, flex, colour/finish, loft, hand, wood/iron number, tip (.355 taper / .370 parallel), length. Empty string when not applicable.
+- "gs_name": "<BRAND> <TYPE> <MODEL IN CAPS> (<attributes separated by " / ">)", attributes in the order the master uses for that model (look at the nearest items); e.g. NIPPON SHAFT SHAFT IRON N.S.PRO MODUS³ WEDGE 105 (111G / S / LUXURY BLACK / .355 TAPER 37").
+- "gs_sku": "<CATEGORY PREFIX>-<BRAND CODE>-<MODEL CODE>-<attribute codes>", reusing the model and brand codes from the nearest master items; prefixes HD/HF/HH/HI/HW for heads, SF/SI/SH/SP for shafts, GR grips, CO components; colour codes BLK BLU RED GRN ORG WHT GLD SLV GRY CHR; weight as the number, with G where the master does so.
+- "note": one short sentence a buyer would want — what was confirmed, or what the description got wrong (e.g. "105 here is a model label, not a weight — the shaft is 111g."). Empty string when there is nothing to say.
+
+Never invent a spec the description or the manufacturer data does not support. Keep the master's exact spelling of model names.
+Reply with ONLY this JSON, no prose before or after it:
+{"results":[{"i":number,"status":"in master"|"new"|"unknown","brand":string,"type":string,"version":string,"spec1":string,"spec2":string,"spec3":string,"gs_name":string,"gs_sku":string,"note":string}]}`;
+
+// The Name Finder's AI pass: identifies each line like a fitter would — with
+// the manufacturer's data when the description is ambiguous — and names it.
+// Opus 5.5 with web search; a few lines per call so the function finishes
+// well inside the edge-function time limit.
+async function matchNames(key: string, lines: unknown[]) {
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "anthropic-beta": "server-side-fallback-2026-07-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "claude-opus-5-5",
+      max_tokens: 16000,
+      output_config: { effort: "medium" },
+      // a policy decline is re-run on a fallback model inside the same call
+      fallbacks: "default",
+      tools: [{ type: "web_search_20260209", name: "web_search", max_uses: Math.min(2 * lines.length, 16) }],
+      messages: [{ role: "user", content: [{ type: "text", text: NAMES_PROMPT + "\n\nLINES:\n" + JSON.stringify(lines) }] }],
+    }),
+  });
+  if (!resp.ok) return json({ error: "Anthropic API error: " + (await resp.text()).slice(0, 300) }, 502);
+  const out = await resp.json();
+  if (out.stop_reason === "refusal") return json({ error: "The AI reader declined this request." }, 422);
+  if (out.stop_reason === "max_tokens") return json({ error: "The answer was cut off — try fewer lines." }, 422);
+  const blocks = Array.isArray(out.content) ? out.content : [];
+  const searches = blocks.filter((b: { type: string }) => b.type === "server_tool_use").length;
+  const text = blocks.filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) return json({ error: "Could not read the matches." }, 422);
+  try {
+    const parsed = JSON.parse(m[0]);
+    parsed.searches = searches;
+    parsed.usage = out.usage;
+    return json(parsed);
+  } catch (_e) {
+    return json({ error: "The matches came back incomplete — try fewer lines." }, 422);
+  }
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -121,23 +174,9 @@ Deno.serve(async (req) => {
     if (mode === "match_names") {
       const key = Deno.env.get("ANTHROPIC_API_KEY");
       if (!key) return json({ error: "ANTHROPIC_API_KEY secret is not set in Supabase." }, 500);
-      const lines = Array.isArray(body.lines) ? body.lines.slice(0, 60) : [];
+      const lines = Array.isArray(body.lines) ? body.lines.slice(0, 12) : [];
       if (!lines.length) return json({ error: "No lines to match." }, 400);
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 8000,
-          messages: [{ role: "user", content: [{ type: "text", text: NAMES_PROMPT + "\n\nLINES:\n" + JSON.stringify(lines) }] }],
-        }),
-      });
-      if (!resp.ok) return json({ error: "Anthropic API error: " + (await resp.text()).slice(0, 300) }, 502);
-      const out = await resp.json();
-      const text = (out.content || []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
-      const m = text.match(/\{[\s\S]*\}/);
-      if (!m) return json({ error: "Could not read the matches." }, 422);
-      try { return json(JSON.parse(m[0])); } catch (_e) { return json({ error: "The matches came back incomplete — try fewer lines." }, 422); }
+      return await matchNames(key, lines);
     }
 
     if (!data || !media_type) return json({ error: "Missing file data." }, 400);
