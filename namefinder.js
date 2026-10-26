@@ -23,6 +23,7 @@
     PRP: "PURPLE", CPPR: "COPPER", BRZ: "BRONZE" };
   const FLEX = new Set(["L", "A", "R", "R1", "R2", "SR", "S", "X", "TX", "LS", "M0", "M1", "M2", "M3", "M4",
     "5.5", "6.0", "6.5", "7.0", "R+", "S+", "X+", "STIFF", "REGULAR", "SENIOR", "LADIES", "LADY", "EXTRA"]);
+  const FINISH = new Set(["LUXURY", "MATTE", "GLOSS", "GLOSSY", "SATIN", "BRUSHED", "POLISHED", "PEARL", "METALLIC"]);
   const FLEX_WORD = { STIFF: "S", REGULAR: "R", SENIOR: "A", LADIES: "L", LADY: "L", EXTRA: "X" };
   const CAT_WORDS = [
     // longer phrases first so "FW HEAD-SOLE" wins over "FW HEAD"
@@ -58,7 +59,8 @@
     if ((m = t.match(/\b(\d{1,2})\s*W\b/)) && !/SHAFT/.test(cat || "")) a.wood = m[1] + "W";
     if ((m = t.match(/\bHW\b/))) a.wood = "HW";
     if ((m = t.match(/\b(\d)\s*[HU]\b/)) && /HYBRID/.test(cat || "")) a.hybrid = m[1] + "H";
-    if ((m = t.match(/#\s*(\d{1,2}|[PASGLW]W?|W)\b/))) a.iron = m[1].replace(/^(\w)W$/, "$1W");
+    if ((m = t.match(/#\s*(\d{1,2})I?\b/))) a.iron = m[1];
+    else if ((m = t.match(/#\s*([PASGLW]W?)\b/))) a.iron = m[1];
     if ((m = t.match(/\bW#\s*([\d\/]+)/))) a.woodno = "W" + m[1].replace("/", "");
     // loft: 9.0 / 10.5 / 12 / "5/18" (wood/loft) / wedge 50-64
     if ((m = t.match(/\b(\d{1,2})\s*\/\s*(\d{2}(?:\.\d)?)\b/))) { a.wood = a.wood || m[1] + "W"; a.loft = m[2]; }
@@ -78,9 +80,10 @@
       const g = f.match(/^(\d{1,3})(R1|SR|TX|LS|R|S|X|A|L)$/);
       if (g) { a.flex = g[2]; if (!a.weight) a.weight = g[1]; break; }
     }
-    for (const tok of t.split(" ")) {
-      const c = tok.replace(/\/.*/, "");
-      if (COLOURS[c]) { a.colour = COLOURS[c]; break; }
+    const toks = t.split(" ");
+    for (let i = 0; i < toks.length; i++) {
+      const c = toks[i].replace(/\/.*/, "");
+      if (COLOURS[c]) { a.colour = COLOURS[c]; if (i > 0 && FINISH.has(toks[i - 1])) a.finish = toks[i - 1]; break; }
     }
     if (a.loft != null) a.loft = String(parseFloat(a.loft));
     // a bare number on a club line: "QUANTUM MAX 7" is a 7-wood, "G440 3" a 3-hybrid, "APEX 5" a 5-iron
@@ -92,15 +95,15 @@
     return a;
   }
   const ATTR_ORDER = ["wood", "woodno", "hybrid", "iron", "loft", "weight", "flex", "colour", "hand"];
-  const attrWord = (k, v) => k === "colour" ? COLOUR_NAME[v] || v : k === "iron" ? "#" + v : v;
-  const attrCode = (k, v) => k === "iron" ? v : v;
+  const attrWord = (k, v, a) => k === "colour" ? ((a && a.finish ? a.finish + " " : "") + (COLOUR_NAME[v] || v)) : k === "iron" ? "#" + v : v;
+  const attrCode = (k, v, a) => k === "colour" && a && a.finish ? a.finish.slice(0, 3) + v : v;
 
   // ---- model words: the name with brand, category words and attributes removed ----
   function modelWords(name, brand) {
     let s = norm(name);
     if (brand) s = s.replace(norm(brand), " ");
     s = s.replace(/\([^)]*\)\s*$/, " ");
-    return tokens(s).filter((w) => !NOISE.has(w) && !FLEX.has(w) && !COLOURS[w] && !/^\d+(\.\d+)?$/.test(w) && !/^#/.test(w) && !/^\d+[WHU]$/.test(w) && !/^\d+\/\d+$/.test(w) && !/^\d{1,3}(R1|SR|TX|LS|R|S|X|A|L)$/.test(w));
+    return tokens(s).filter((w) => !NOISE.has(w) && !FLEX.has(w) && !COLOURS[w] && !FINISH.has(w) && !/^\d+(\.\d+)?$/.test(w) && !/^#/.test(w) && !/^\d+[WHU]$/.test(w) && !/^\d+\/\d+$/.test(w) && !/^\d{1,3}(R1|SR|TX|LS|R|S|X|A|L)$/.test(w));
   }
   const abbrev = (w) => (w.length <= 3 ? w : w[0] + w.slice(1).replace(/[AEIOU]/g, "")).slice(0, 5);
 
@@ -122,6 +125,8 @@
       };
     });
     const brands = [...new Set(items.map((x) => x.brand).filter(Boolean))].sort((a, b) => b.length - a.length);
+    const catsByBrand = {};
+    items.forEach((x) => { if (x.brand) (catsByBrand[x.brand] = catsByBrand[x.brand] || new Map()).set(x.cat, (catsByBrand[x.brand].get(x.cat) || 0) + 1); });
     const brandCode = {};
     items.forEach((x) => { if (x.brand && x.brandCode && !brandCode[x.brand]) brandCode[x.brand] = x.brandCode; });
     // a model word that belongs to exactly one brand identifies the brand ("QUANTUM" → CALLAWAY)
@@ -129,7 +134,7 @@
     items.forEach((x) => x.model.forEach((w) => { (wordBrands[w] = wordBrands[w] || new Set()).add(x.brand); }));
     const brandByWord = {};
     Object.entries(wordBrands).forEach(([w, set]) => { if (set.size === 1 && w.length >= 3) brandByWord[w] = [...set][0]; });
-    return { items, brands, brandCode, brandByWord };
+    return { items, brands, brandCode, brandByWord, catsByBrand };
   }
 
   function detectBrand(line, idx) {
@@ -141,6 +146,17 @@
     for (const [k, v] of Object.entries(ALIAS)) if (t.includes(k) && idx.brands.includes(v)) return v;
     for (const w of tokens(t)) if (idx.brandByWord[w]) return idx.brandByWord[w];
     return "";
+  }
+  const HEAD_TO_SHAFT = {
+    "WEDGE HEAD": ["SHAFT IRON"], "IRON HEAD": ["SHAFT IRON"], "DRIVER HEAD": ["SHAFT DRIVER"],
+    "FW HEAD": ["SHAFT FW", "SHAFT DRIVER"], "HYBRID HEAD": ["SHAFT HYBRID"], PUTTER: ["SHAFT PUTTER", "PUTTER GRIP"],
+  };
+  function constrainCategory(cat, brand, idx) {
+    const sells = brand && idx.catsByBrand[brand];
+    if (!cat || !sells || sells.has(cat)) return cat;
+    for (const alt of HEAD_TO_SHAFT[cat] || []) if (sells.has(alt)) return alt;
+    if (sells.size === 1) return [...sells.keys()][0];
+    return "";   // let the matches decide
   }
   function detectCategory(line, hint) {
     const t = norm(line);
@@ -193,8 +209,8 @@
       });
     }
     ATTR_ORDER.forEach((k) => { if (L.attrs[k] != null && !order.includes(k)) order.push(k); });
-    const segs = order.filter((k) => L.attrs[k] != null).map((k) => attrWord(k, L.attrs[k]));
-    const codes = order.filter((k) => L.attrs[k] != null).map((k) => attrCode(k, L.attrs[k]));
+    const segs = order.filter((k) => L.attrs[k] != null).map((k) => attrWord(k, L.attrs[k], L.attrs));
+    const codes = order.filter((k) => L.attrs[k] != null).map((k) => attrCode(k, L.attrs[k], L.attrs));
     let head, modelCode;
     if (sibling) { head = sibling.head; modelCode = sibling.skuModel; }
     else {
@@ -209,7 +225,7 @@
   function analyzeLine(raw, idx, hint) {
     const text = String(raw || "").trim();
     const brand = detectBrand(text, idx);
-    const cat = detectCategory(text, hint && hint.cat);
+    const cat = constrainCategory(detectCategory(text, hint && hint.cat), brand, idx);
     const attrs = readAttrs(text, cat);
     const words = tokens(text);
     let L = { text, brand, cat, attrs, words, model: modelWords(text, brand) };
