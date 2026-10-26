@@ -71,6 +71,10 @@
     expAll: null,             // cached expense tracker rows { items, nameMap }
     expSearch: "", expType: "", expState: "all", expWho: "", expFrom: "", expTo: "",
     expSort: { key: "date", dir: "desc" },
+    master: null,             // product master { items, loadedAt } for the Name Finder
+    namesInput: "",
+    namesResults: null,
+    namesOnlyNew: false,
     coderTo: "",
     coderPaidOnly: false,
     purchSupplier: "",
@@ -93,9 +97,10 @@
     ["purchasing", "📚 Purchasing book"],
     ["coder", "🧮 Petty cash coder"],
     ["expenses", "📒 Expense tracker"],
+    ["names", "🔎 Name finder"],
   ];
   const EMPLOYEE_DEFAULT = ["payment", "trip", "petty", "siteops"];
-  const ADMIN_FEATURES = ["approval", "disburse", "tracking", "purchasing", "coder", "expenses"];
+  const ADMIN_FEATURES = ["approval", "disburse", "tracking", "purchasing", "coder", "expenses", "names"];
 
   // mirrors public.has_perm() in the database
   function permsOf(profile) {
@@ -458,7 +463,7 @@
     let view = (location.hash || "#dashboard").slice(1);
     const allViews = ["dashboard", "new", "trips", "newtrip", "petty", "newpetty",
       "receiving", "newreceiving", "movements", "newmovement", "admin", "disburse",
-      "tracking", "purchasing", "coder", "expenses", "users", "settings", "noaccess"];
+      "tracking", "purchasing", "coder", "expenses", "names", "users", "settings", "noaccess"];
     if (!allViews.includes(view)) view = "dashboard";
 
     // feature gating: send people to something they can actually open
@@ -467,7 +472,7 @@
       trips: "trip", newtrip: "trip",
       petty: "petty", newpetty: "petty",
       receiving: "siteops", newreceiving: "siteops", movements: "siteops", newmovement: "siteops",
-      admin: "approval", disburse: "disburse", tracking: "tracking", purchasing: "purchasing", coder: "coder", expenses: "expenses",
+      admin: "approval", disburse: "disburse", tracking: "tracking", purchasing: "purchasing", coder: "coder", expenses: "expenses", names: "names",
     };
     if (view === "users" && state.profile.role !== "admin") view = "settings";
 
@@ -500,6 +505,7 @@
       purchasing: "Purchasing Book",
       coder: "Petty Cash Coder",
       expenses: "Expense Tracker",
+      names: "Name Finder",
       users: "Users & Access",
       settings: "My Settings",
       noaccess: "Welcome",
@@ -539,6 +545,7 @@
     else if (view === "purchasing") renderPurchasing();
     else if (view === "coder") renderCoder();
     else if (view === "expenses") renderExpenses();
+    else if (view === "names") renderNames();
     else if (view === "users") renderUsers();
     else if (view === "settings") renderSettings();
     else if (view === "noaccess") renderNoAccess();
@@ -4000,6 +4007,247 @@
     const w = window.open("", "_blank");
     if (!w) { toast("Allow pop-ups for this site to print", "error"); return; }
     w.document.open(); w.document.write(doc); w.document.close();
+  }
+
+  // ==========================================================================
+  //  VIEW: NAME FINDER (admin) — supplier descriptions → Golf Solutions names
+  //  and SKUs. The engine is namefinder.js; this view feeds it the master from
+  //  the database and the lines (pasted, or from a supplier invoice), shows
+  //  the result on screen, and can hand the hard ones to the AI reader.
+  // ==========================================================================
+  async function loadMaster(force) {
+    if (state.master && !force) return state.master;
+    const items = [];
+    // PostgREST pages at 1,000 rows; the master is bigger than that
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await sb.from("product_master").select("sku,name,brand,item_category").order("sku").range(from, from + 999);
+      if (error) throw error;
+      items.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+    state.master = { items, loadedAt: new Date(), index: window.GS_NAMES ? window.GS_NAMES.buildIndex(items) : null };
+    return state.master;
+  }
+
+  async function renderNames() {
+    const root = $("#view-root");
+    root.innerHTML = '<div class="loading">Loading the product master…</div>';
+    let master;
+    try { master = await loadMaster(); }
+    catch (err) {
+      root.innerHTML = errorBox(
+        /product_master/.test(err.message || "")
+          ? "The product master table is not set up yet — run setup-product-master.sql and seed-product-master.sql in Supabase."
+          : friendlyError(err)
+      );
+      return;
+    }
+    if (!window.GS_NAMES) { root.innerHTML = errorBox("namefinder.js did not load — reload the page."); return; }
+
+    // recent supplier invoices, to pull their lines in without retyping
+    const { data: invoices } = await sb
+      .from("payment_requests").select("id,ref_number,payee_name,items,invoice_date")
+      .eq("request_type", "supplier").not("items", "is", null)
+      .order("invoice_date", { ascending: false, nullsFirst: false }).limit(60);
+
+    const results = state.namesResults;
+    const shown = results ? results.filter((r) => !state.namesOnlyNew || r.status !== "in master") : [];
+    const counts = results ? {
+      inMaster: results.filter((r) => r.status === "in master").length,
+      isNew: results.filter((r) => r.status === "NEW").length,
+      unknown: results.filter((r) => r.status === "unknown").length,
+    } : null;
+
+    root.innerHTML = `
+      <div class="nf-grid">
+        <div class="nf-rail">
+          <div class="card panel">
+            <h3 style="margin:0 0 4px">Lines to name</h3>
+            <p class="sub">One product per line, as the supplier wrote it. A quantity after a tab, or “x2”, is kept.</p>
+            <select id="nf-invoice" style="margin-bottom:8px">
+              <option value="">Load lines from a supplier invoice…</option>
+              ${(invoices || []).filter((p) => Array.isArray(p.items) && p.items.length).map((p) =>
+                `<option value="${p.id}">${esc(p.ref_number || "—")} · ${esc(p.payee_name || "")} · ${p.items.length} lines</option>`).join("")}
+            </select>
+            <textarea id="nf-input" rows="14" placeholder="CALLAWAY QUANTUM MAX 10.5&#10;TOUR AD DI-6 S ORANGE&#10;PING G440 SFT 7/22">${esc(state.namesInput || "")}</textarea>
+            <div class="modal-actions" style="margin-top:10px">
+              <button class="btn btn-primary" id="nf-run">🔎 Find names</button>
+              <button class="btn btn-ghost" id="nf-clear">Clear</button>
+            </div>
+          </div>
+          <div class="card panel">
+            <h3 style="margin:0 0 4px">Product master</h3>
+            <p class="sub" style="margin-bottom:8px"><b>${master.items.length.toLocaleString("en-US")}</b> products loaded${
+              master.loadedAt ? " · " + fmtDateTime(master.loadedAt) : ""
+            }</p>
+            <label class="file-drop" id="nf-master-drop" style="padding:12px">
+              <input type="file" id="nf-master-file" accept=".csv,.xlsx,.xls" />
+              <span id="nf-master-label">⬆️ Update from an Odoo product export (CSV or XLSX)</span>
+            </label>
+            <p class="hint" style="margin:8px 0 0">Columns needed: Name, Internal Reference (SKU); Product Category (brand) and Item Category help. Existing SKUs are updated, new ones added, nothing is deleted.</p>
+            <p id="nf-master-msg" class="msg"></p>
+          </div>
+        </div>
+        <div class="nf-main">
+          ${
+            results
+              ? `<div class="toolbar" style="margin-bottom:10px">
+                  <span class="sub" style="margin:0"><b>${results.length}</b> line${results.length === 1 ? "" : "s"} ·
+                    <span class="badge approved">${counts.inMaster} in master</span>
+                    <span class="badge pending">${counts.isNew} new</span>
+                    ${counts.unknown ? `<span class="badge rejected">${counts.unknown} unknown</span>` : ""}</span>
+                  <label class="daterange" style="gap:6px"><input type="checkbox" id="nf-onlynew" ${state.namesOnlyNew ? "checked" : ""} style="width:16px;height:16px;margin:0" /> only new &amp; unknown</label>
+                  <span class="spacer"></span>
+                  <button class="btn btn-ghost btn-sm" id="nf-ai" title="Send the lines and their nearest master items to the AI reader to settle the hard ones">✨ Refine with AI</button>
+                  <button class="btn btn-ghost btn-sm" id="nf-copy">📋 Copy table</button>
+                </div>
+                <div class="card table-wrap"><table class="nf-table">
+                  <thead><tr><th>#</th><th>Qty</th><th>Original description</th><th>GS name</th><th>GS SKU</th><th>Status</th><th>Nearest in master</th></tr></thead>
+                  <tbody>${shown.map((r) => `
+                    <tr class="nf-${r.status === "in master" ? "ok" : r.status === "NEW" ? "new" : "unk"}">
+                      <td class="paytiny">${r.i + 1}</td>
+                      <td class="amount">${r.qty}</td>
+                      <td>${esc(r.text)}</td>
+                      <td><div style="font-weight:600">${esc(r.name || "—")}</div><div class="paytiny">${esc([r.brand, r.cat].filter(Boolean).join(" · "))}${r.reason ? " · " + esc(r.reason) : ""}</div></td>
+                      <td class="paytiny" style="white-space:nowrap">${esc(r.sku || "—")}</td>
+                      <td><span class="badge ${r.status === "in master" ? "approved" : r.status === "NEW" ? "pending" : "rejected"}">${esc(r.status)}</span>${r.ai ? '<div class="paytiny">✨ AI</div>' : ""}</td>
+                      <td class="paytiny">${(r.nearest || []).slice(0, 3).map((n) =>
+                        `<div><b>${esc(n.sku)}</b> ${esc(n.name)}<div style="color:var(--amber)">${esc(n.differs)}</div></div>`).join("") || "—"}</td>
+                    </tr>`).join("")}</tbody>
+                </table></div>`
+              : `<div class="card panel empty"><div class="big">🔎</div><h3>Paste lines, or pick an invoice</h3>
+                  <p class="sub">Each line is matched to the product master. A match with the same spec is <b>in master</b>; a known model in a new spec gets a proposed name and SKU in the house convention; anything else is marked unknown with the nearest items to compare.</p></div>`
+          }
+        </div>
+      </div>`;
+
+    const input = $("#nf-input");
+    input.addEventListener("input", () => (state.namesInput = input.value));
+    $("#nf-invoice").addEventListener("change", (e) => {
+      const p = (invoices || []).find((x) => x.id === e.target.value);
+      if (!p) return;
+      input.value = p.items.map((it) => `${it.item_name || ""}\t${it.qty || 1}`).join("\n");
+      state.namesInput = input.value;
+      runNames();
+    });
+    const runNames = () => {
+      const lines = window.GS_NAMES.parseLines(input.value);
+      if (!lines.length) { toast("Paste at least one line", "error"); return; }
+      const idx = master.index || (master.index = window.GS_NAMES.buildIndex(master.items));
+      state.namesResults = lines.map((l, i) => ({ i, qty: l.qty, ...window.GS_NAMES.analyzeLine(l.desc, idx) }));
+      renderNames();
+    };
+    $("#nf-run").addEventListener("click", runNames);
+    $("#nf-clear").addEventListener("click", () => { state.namesInput = ""; state.namesResults = null; renderNames(); });
+    $("#nf-onlynew")?.addEventListener("change", (e) => { state.namesOnlyNew = e.target.checked; renderNames(); });
+    $("#nf-copy")?.addEventListener("click", () => {
+      const rows = [["#", "Qty", "Original", "GS name", "GS SKU", "Status", "Brand", "Item category", "Nearest"]]
+        .concat(shown.map((r) => [r.i + 1, r.qty, r.text, r.name, r.sku, r.status, r.brand, r.cat, (r.nearest || []).map((n) => `${n.sku} ${n.name} (${n.differs})`).join(" | ")]));
+      const tsv = rows.map((row) => row.map((c) => String(c ?? "").replace(/\t|\n/g, " ")).join("\t")).join("\n");
+      navigator.clipboard.writeText(tsv).then(() => toast("Table copied — paste into a sheet")).catch(() => toast("Could not copy", "error"));
+    });
+    $("#nf-ai")?.addEventListener("click", () => refineNamesWithAi($("#nf-ai")));
+    $("#nf-master-file").addEventListener("change", (e) => importMaster(e.target.files[0]));
+  }
+
+  // The deterministic engine is right on clean lines; the AI reader settles
+  // the rest with the nearest master items in front of it. Only lines not
+  // already matched are sent, with their candidates, so the call stays small.
+  async function refineNamesWithAi(btn) {
+    const results = state.namesResults || [];
+    const todo = results.filter((r) => r.status !== "in master");
+    if (!todo.length) { toast("Every line is already matched"); return; }
+    btn.disabled = true; btn.textContent = `✨ Asking about ${todo.length}…`;
+    try {
+      const payload = todo.slice(0, 60).map((r) => ({
+        i: r.i, description: r.text, draft: { status: r.status, name: r.name, sku: r.sku },
+        candidates: (r.nearest || []).map((n) => ({ sku: n.sku, name: n.name })),
+      }));
+      const { data, error } = await sb.functions.invoke("swift-action", { body: { mode: "match_names", lines: payload } });
+      if (error) {
+        let detail = "";
+        try { detail = (await error.context?.json())?.error || ""; } catch { /* ignore */ }
+        throw new Error(detail || "The AI reader is not available — the parse-po function needs redeploying with match_names.");
+      }
+      if (data?.error) throw new Error(data.error);
+      const byI = Object.fromEntries((data.results || []).map((x) => [x.i, x]));
+      let changed = 0;
+      results.forEach((r) => {
+        const a = byI[r.i]; if (!a) return;
+        const status = a.status === "in master" ? "in master" : a.status === "new" ? "NEW" : "unknown";
+        if (status !== r.status || a.sku !== r.sku || a.name !== r.name) changed++;
+        Object.assign(r, { status, sku: a.sku || r.sku, name: a.name || r.name, brand: a.brand || r.brand, cat: a.item_category || r.cat, reason: a.reason || "", ai: true });
+      });
+      toast(`AI reviewed ${todo.length} line(s) · ${changed} changed`);
+      renderNames();
+    } catch (err) {
+      toast(err.message || "AI refine failed", "error");
+      btn.disabled = false; btn.textContent = "✨ Refine with AI";
+    }
+  }
+
+  // Refresh the master from an Odoo product export — CSV straight away, XLSX
+  // through SheetJS loaded on demand. Header names are matched loosely so an
+  // export in Indonesian or with extra columns still works.
+  async function importMaster(file) {
+    if (!file) return;
+    const msg = $("#nf-master-msg"); const label = $("#nf-master-label");
+    msg.className = "msg"; msg.textContent = "Reading " + file.name + "…";
+    try {
+      let rows;
+      if (/\.xlsx?$/i.test(file.name)) {
+        if (!window.XLSX) await new Promise((ok, fail) => {
+          const sc = document.createElement("script");
+          sc.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"; sc.onload = ok;
+          sc.onerror = () => fail(new Error("Could not load the spreadsheet reader")); document.head.appendChild(sc);
+        });
+        const wb = window.XLSX.read(await file.arrayBuffer(), { type: "array" });
+        rows = window.XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: "" });
+      } else {
+        rows = parseCsv(await file.text());
+      }
+      const head = (rows[0] || []).map((h) => String(h).trim().toLowerCase());
+      const col = (...names) => head.findIndex((h) => names.some((n) => h === n || h.includes(n)));
+      const cName = col("name", "nama"), cSku = col("internal reference", "default_code", "sku", "referensi"),
+        cBrand = col("product category", "kategori produk", "brand"), cCat = col("item category", "kategori item"),
+        cCost = col("cost", "biaya"), cW = col("weight");
+      if (cName < 0 || cSku < 0) throw new Error("Need at least a Name column and an Internal Reference (SKU) column.");
+      const items = rows.slice(1).map((r) => ({
+        sku: String(r[cSku] || "").trim(), name: String(r[cName] || "").trim(),
+        brand: cBrand > -1 ? String(r[cBrand] || "").trim() || null : null,
+        item_category: cCat > -1 ? String(r[cCat] || "").trim() || null : null,
+        cost: cCost > -1 && r[cCost] !== "" && !isNaN(Number(r[cCost])) ? Number(r[cCost]) : null,
+        weight_g: cW > -1 && r[cW] !== "" && !isNaN(Number(r[cW])) ? Number(r[cW]) : null,
+        updated_by: state.user.id,
+      })).filter((x) => x.sku && x.name);
+      if (!items.length) throw new Error("No rows with both a name and a SKU.");
+      for (let i = 0; i < items.length; i += 200) {
+        msg.textContent = `Saving ${Math.min(i + 200, items.length)} of ${items.length}…`;
+        const { error } = await sb.from("product_master").upsert(items.slice(i, i + 200), { onConflict: "sku" });
+        if (error) throw error;
+      }
+      msg.className = "msg ok"; msg.textContent = `Master updated — ${items.length} products from ${file.name} ✔`;
+      label.textContent = "⬆️ Update from an Odoo product export (CSV or XLSX)";
+      await loadMaster(true);
+      if (state.namesResults) { state.namesResults = null; }
+      renderNames();
+    } catch (err) {
+      msg.className = "msg error"; msg.textContent = friendlyError(err);
+    }
+  }
+  // a small CSV reader that respects quotes — Odoo exports quote names with commas
+  function parseCsv(text) {
+    const rows = []; let row = [], cell = "", q = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (q) { if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; }
+      else if (ch === '"') q = true;
+      else if (ch === ",") { row.push(cell); cell = ""; }
+      else if (ch === "\n" || ch === "\r") { if (ch === "\r" && text[i + 1] === "\n") i++; row.push(cell); rows.push(row); row = []; cell = ""; }
+      else cell += ch;
+    }
+    if (cell || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter((r) => r.some((c) => String(c).trim()));
   }
 
   // ==========================================================================

@@ -1,5 +1,6 @@
 // ============================================================================
 // GS Operational System — Edge Function: parse-po  (deployed slug: swift-action)
+// v12 — modes: receiving (default), invoice, payment_proof, match_names (Name Finder)
 // v2 — two modes:
 //   * default (receiving): { supplier, ref_number, items:[{item_name, qty, unit}] }
 //   * mode "invoice" (supplier payment): also extracts prices + currency and
@@ -98,11 +99,47 @@ Extract:
 Reply with ONLY the JSON object, no other text:
 {"supplier": ..., "ref_number": ..., "currency": ..., "items": [...], "charges": [...], "total": ..., "invoice_date": ..., "due_date": ..., "buyer": ..., "payment_terms": ..., "gross_subtotal": ..., "discount_total": ..., "bank_name": ..., "bank_account_number": ..., "bank_account_name": ...}`;
 
+const NAMES_PROMPT = `You are matching supplier product descriptions to the Golf Solutions product master (golf club components: heads, shafts, grips).
+For EACH line you get the description and up to 8 nearest master products (sku + name) found by a keyword search, plus a draft proposal.
+Decide for each line:
+- "in master": the description is the SAME product and SAME spec (model, loft, flex, weight, colour, hand, wood/iron number) as one master item → return that sku.
+- "new": the model exists or the brand is clear but this exact spec is not in the master → return a proposed name and sku IN THE HOUSE CONVENTION:
+    name = "<BRAND> <ITEM CATEGORY> <MODEL> (<attributes separated by " / ">)", attributes in the same order the master uses for that model (look at the nearest items).
+    sku  = "<CATEGORY PREFIX>-<BRAND CODE>-<MODEL CODE>-<attribute codes>", reusing the model code and brand code from the nearest master items; colour codes BLK BLU RED GRN ORG WHT GLD SLV GRY CHR.
+- "unknown": not enough information to tell what it is.
+Never invent a spec that is not in the description. Keep the master's exact spelling of model names.
+Reply with ONLY JSON: {"results":[{"i":number,"status":"in master"|"new"|"unknown","sku":string,"name":string,"brand":string,"item_category":string,"reason":string}]}`;
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
-    const { data, media_type, mode } = await req.json();
+    const body = await req.json();
+    const { data, media_type, mode } = body;
+
+    // text-only mode: match product descriptions against the master
+    if (mode === "match_names") {
+      const key = Deno.env.get("ANTHROPIC_API_KEY");
+      if (!key) return json({ error: "ANTHROPIC_API_KEY secret is not set in Supabase." }, 500);
+      const lines = Array.isArray(body.lines) ? body.lines.slice(0, 60) : [];
+      if (!lines.length) return json({ error: "No lines to match." }, 400);
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 8000,
+          messages: [{ role: "user", content: [{ type: "text", text: NAMES_PROMPT + "\n\nLINES:\n" + JSON.stringify(lines) }] }],
+        }),
+      });
+      if (!resp.ok) return json({ error: "Anthropic API error: " + (await resp.text()).slice(0, 300) }, 502);
+      const out = await resp.json();
+      const text = (out.content || []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
+      const m = text.match(/\{[\s\S]*\}/);
+      if (!m) return json({ error: "Could not read the matches." }, 422);
+      try { return json(JSON.parse(m[0])); } catch (_e) { return json({ error: "The matches came back incomplete — try fewer lines." }, 422); }
+    }
+
     if (!data || !media_type) return json({ error: "Missing file data." }, 400);
 
     const key = Deno.env.get("ANTHROPIC_API_KEY");

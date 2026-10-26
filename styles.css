@@ -529,3 +529,14 @@ tbody tr:hover { background: #fafcfb; cursor: pointer; }
 /* the actions row under the filters: everything in it acts on the filtered list */
 .toolbar.actions { margin-top: -6px; margin-bottom: 14px; padding: 8px 12px; background: var(--green-050); border-radius: 10px; }
 .toolbar.actions .fx-hint b { color: var(--green-700); }
+
+/* name finder */
+.nf-grid { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 16px; align-items: start; }
+.nf-rail { display: flex; flex-direction: column; gap: 14px; }
+.nf-rail textarea { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.5; }
+.nf-table { font-size: 13px; }
+.nf-table td { vertical-align: top; }
+tr.nf-ok td:first-child { box-shadow: inset 3px 0 0 var(--green-badge); }
+tr.nf-new td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+tr.nf-unk td:first-child { box-shadow: inset 3px 0 0 var(--red); }
+@media (max-width: 900px) { .nf-grid { grid-template-columns: 1fr; } }
