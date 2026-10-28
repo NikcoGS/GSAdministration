@@ -1,5 +1,6 @@
 // ============================================================================
 // GS Operational System — Edge Function: parse-po  (deployed slug: swift-action)
+// v14 — invoice: column-aware prompt + reconciliation against printed totals
 // v13 — modes: receiving (default), invoice, payment_proof, match_names (Name Finder: Opus 5.5 + web search)
 // v2 — two modes:
 //   * default (receiving): { supplier, ref_number, items:[{item_name, qty, unit}] }
@@ -70,6 +71,11 @@ Extract:
       2. DOCUMENT-level discounts (e.g. "Discount 5%", "Special discount Rp 500.000" on the total) are then PRORATED proportionally across ALL items, on top of any line-level discounts. Example: unit price 1129 with a 5% document discount becomes unit_price 1072.55.
       3. If both exist, apply the line discount first, then prorate the document discount over the already-discounted prices.
     After prorating, the items must add up to the payable grand total; if rounding leaves a difference of a few cents, adjust the last item's unit_price so the sum matches exactly.
+  * READ THE COLUMNS, NOT THE NEAREST NUMBER. Indonesian invoices are usually laid out as
+      Kode Barang | Nama Barang | Kts. (qty) | @Harga (unit price before discount) | Diskon (discount AMOUNT or %) | Total Harga (net line total)
+    "Diskon" is money taken OFF — it is never the price. The net line is "Total Harga" (or Kts × @Harga − Diskon), and
+    unit_price = Total Harga ÷ Kts. Worked example: Kts 3, @Harga 1.025.000, Diskon 922.500, Total Harga 2.152.500 → unit_price 717500 (NOT 307500, which is the discount ÷ 3).
+  * CHECK YOURSELF BEFORE ANSWERING: sum(qty × unit_price) + sum(charges) must equal the printed grand total ("Total", "Grand Total", "Jumlah", and the amount in words after "Terbilang"). If it does not, you have mis-read a column — go back to the line table and read it again.
   * items must contain GOODS/SERVICES ONLY — never tax, shipping, or other charges, and never subtotal/discount/total rows.
   * OPTIONS ARE PART OF THE NAME. If the invoice has a separate Options /
     Specification / Variant column, or option lines under an item (flex, shaft,
@@ -86,7 +92,7 @@ Extract:
   * examples: tax ("PPN 11%", VAT), shipping ("Biaya Kirim", freight, ongkir), handling, admin fee, insurance
   * use the charge's name exactly as printed on the document
   * empty array if none
-- "total": the payable grand total in that currency = items + charges, after discounts (number or null)
+- "total": the payable grand total AS PRINTED on the document ("Total", "Grand Total", "Jumlah", matching the "Terbilang" words) — never computed from your own lines (number or null)
 - "invoice_date": the invoice/bill date as "YYYY-MM-DD" (null if unreadable)
 - "due_date": the payment due date as "YYYY-MM-DD" (null if not stated)
 - "buyer": the customer/buyer the invoice is addressed to (string or null)
@@ -263,6 +269,33 @@ Deno.serve(async (req) => {
           0,
         ) + parsed.charges.reduce((s: number, c: { amount?: number }) => s + (Number(c.amount) || 0), 0);
       if (parsed.total == null || !(Number(parsed.total) > 0)) parsed.total = computedTotal;
+
+      // The printed totals are the document's own arithmetic; the per-line
+      // prices are the model's reading of a table. When the two disagree and
+      // the printed subtotal − discount + charges does equal the printed
+      // total, the lines were misread (a Diskon column taken for the price is
+      // the usual one) — rescale them to the printed net and say so.
+      const printed = Number(parsed.total) || 0;
+      const chargesSum = parsed.charges.reduce((s: number, c: { amount?: number }) => s + (Number(c.amount) || 0), 0);
+      const itemsSum = computedTotal - chargesSum;
+      const gross = Number(parsed.gross_subtotal) || 0;
+      const disc = Number(parsed.discount_total) || 0;
+      const off = printed > 0 ? Math.abs(printed - computedTotal) / printed : 0;
+      if (off > 0.005 && gross > 0 && itemsSum > 0) {
+        const netItems = gross - disc;
+        if (netItems > 0 && Math.abs(netItems + chargesSum - printed) / printed <= 0.005) {
+          const k = netItems / itemsSum;
+          parsed.items = parsed.items.map((it: Record<string, unknown>) => ({
+            ...it, unit_price: Math.round(Number(it.unit_price) * k * 100) / 100,
+          }));
+          parsed.repaired =
+            `The line prices as first read came to ${itemsSum.toLocaleString("en-US")} but the document's own figures are ` +
+            `subtotal ${gross.toLocaleString("en-US")} − discount ${disc.toLocaleString("en-US")} = ${netItems.toLocaleString("en-US")}; ` +
+            `the unit prices were corrected to match. Check them against the invoice.`;
+        } else {
+          parsed.mismatch = `Lines + charges come to ${computedTotal.toLocaleString("en-US")} but the document says ${printed.toLocaleString("en-US")}.`;
+        }
+      }
 
       if (cur !== "IDR") {
         try {

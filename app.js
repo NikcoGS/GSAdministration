@@ -1053,8 +1053,14 @@
         items.reduce((s, it) => s + (Number(it.qty) || 1) * (Number(it.unit_price) || 0), 0) +
         charges.reduce((s, c) => s + (Number(c.amount) || 0), 0);
       const docTotal = Number(parsed.total);
+      form._docTotal = docTotal || null;   // the printed total, checked again at submit
       if (docTotal && Math.abs(docTotal - lineTotal) > Math.max(1, docTotal * 0.005)) {
         msg.textContent = `⚠ The invoice's grand total is ${money(docTotal, cur)}, but the lines add up to ${money(lineTotal, cur)} — check for missed discounts or charges before submitting.`;
+        msg.className = "msg error";
+      } else if (parsed.repaired) {
+        // the reader misread a column and the server put the lines back in
+        // step with the printed totals — the person should still look
+        msg.textContent = "⚠ " + parsed.repaired;
         msg.className = "msg error";
       } else {
         msg.textContent = `Read ${items.length} item${items.length === 1 ? "" : "s"} from the invoice — verify prices before submitting.` + (parsed.fx_error ? " (" + parsed.fx_error + ")" : "");
@@ -1120,6 +1126,15 @@
       chargesList.reduce((s, c) => s + c.amount, 0);
     if (total <= 0) { msg.textContent = "The total must be positive — check the discount lines."; msg.className = "msg error"; return; }
     const cur = form.currency.value;
+    // A request saved with lines that don't add up to the invoice is a wrong
+    // payment waiting to happen; make the person say so before it is saved.
+    if (form._docTotal && Math.abs(form._docTotal - total) > Math.max(1, form._docTotal * 0.005)) {
+      const ok = confirm(
+        `The invoice says ${money(form._docTotal, cur)} but these lines add up to ${money(total, cur)}.\n\n` +
+        "Submit anyway? (Cancel to go back and fix the lines.)"
+      );
+      if (!ok) return;
+    }
 
     btn.disabled = true; msg.className = "msg"; msg.textContent = "Submitting…";
 
