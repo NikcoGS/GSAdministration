@@ -64,6 +64,8 @@
     trackModule: "receiving", // admin tracking: "receiving" | "movement"
     trackFilter: "all",
     purchAll: null,           // cached purchasing book rows
+    batchRows: null,          // batch upload: one row per file
+    batchDefault: "supplier",
     purchSearch: "",
     purchFilter: "all",
     purchSort: { key: "date", dir: "desc" },
@@ -589,13 +591,228 @@
       <div class="seg">
         <button data-pt="supplier" class="${t === "supplier" ? "active" : ""}">🏭 Supplier payment</button>
         <button data-pt="expense" class="${t === "expense" ? "active" : ""}">🧾 Expenses payment</button>
+        <button data-pt="batch" class="${t === "batch" ? "active" : ""}">📚 Batch upload</button>
       </div>
       <div id="pay-form-slot"></div>`;
     $$(".seg button", root).forEach((b) =>
       b.addEventListener("click", () => { state.payType = b.dataset.pt; renderNewRequest(); })
     );
     if (t === "supplier") renderSupplierForm($("#pay-form-slot"));
+    else if (t === "batch") renderBatchForm($("#pay-form-slot"));
     else renderExpenseForm($("#pay-form-slot"));
+  }
+
+  // ==========================================================================
+  //  BATCH UPLOAD — many invoices or receipts at once: every file is read by
+  //  the document reader, shown as one row to check, and saved as its own
+  //  payment request. The rows follow the same rules as the two single forms.
+  // ==========================================================================
+  function renderBatchForm(root) {
+    if (!state.batchRows) state.batchRows = [];
+    const rows = state.batchRows;
+    const ready = rows.filter((r) => r.status === "ready" || (r.status === "error" && r.f.payee_name && Number(r.f.amount) > 0));
+    const saved = rows.filter((r) => r.status === "saved").length;
+    const reading = rows.some((r) => r.status === "reading");
+    const badge = (r) =>
+      r.status === "saved" ? '<span class="badge approved">saved</span>'
+      : r.status === "reading" ? '<span class="badge pending">reading…</span>'
+      : r.status === "queued" ? '<span class="badge">queued</span>'
+      : r.status === "error" ? `<span class="badge rejected" title="${esc(r.error || "")}">error</span>`
+      : r.mismatch ? '<span class="badge pending" title="The lines do not add up to the printed total">⚠ check</span>'
+      : '<span class="badge approved">ready</span>';
+    const inp = (r, name, type = "text", extra = "") =>
+      `<input class="bt-f" data-id="${r.id}" data-f="${name}" type="${type}" value="${esc(r.f[name] == null ? "" : r.f[name])}" ${extra} ${r.status === "saved" ? "disabled" : ""} />`;
+
+    root.innerHTML = `
+      <div class="card panel">
+        <h3>Batch upload</h3>
+        <p class="sub">Drop every invoice and receipt for this run. Each file is read and becomes one payment request — check the rows, fix anything the reader got wrong, then submit them all.</p>
+        <div class="toolbar" style="margin-bottom:8px">
+          <label class="daterange" style="gap:8px">New files are
+            <select id="bt-default-type"><option value="supplier"${state.batchDefault !== "expense" ? " selected" : ""}>supplier invoices</option><option value="expense"${state.batchDefault === "expense" ? " selected" : ""}>expense receipts</option></select>
+          </label>
+        </div>
+        <label class="file-drop" id="bt-drop">
+          <input type="file" id="bt-files" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif" />
+          <span>📎 Tap to add files — PDF or photos, as many as you like</span>
+        </label>
+        ${
+          rows.length
+            ? `<div class="toolbar" style="margin:14px 0 8px">
+                <span class="sub" style="margin:0"><b>${rows.length}</b> file${rows.length === 1 ? "" : "s"} · ${ready.length} ready${saved ? ` · ${saved} saved` : ""}</span>
+                <span class="spacer"></span>
+                <button class="btn btn-ghost btn-sm" id="bt-read" ${reading ? "disabled" : ""}>✨ Read ${rows.filter((r) => r.status === "queued" || r.status === "error").length ? "unread" : "all again"}</button>
+                <button class="btn btn-primary btn-sm" id="bt-submit" ${ready.length && !reading ? "" : "disabled"}>Submit ${ready.length} request${ready.length === 1 ? "" : "s"}</button>
+              </div>
+              <div class="table-wrap"><table class="batch-table">
+                <thead><tr><th>File</th><th>Type</th><th>Payee / supplier</th><th>Invoice no</th><th>Date</th><th>Amount</th><th>Lines</th><th>Status</th><th></th></tr></thead>
+                <tbody>${rows.map((r) => `
+                  <tr data-id="${r.id}" class="${r.status === "saved" ? "bt-saved" : ""}">
+                    <td><div style="font-weight:600;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.file.name)}">${esc(r.file.name)}</div>
+                        ${inp(r, "title", "text", 'placeholder="Purpose / title" style="margin-top:4px;min-width:180px"')}</td>
+                    <td><select class="bt-f" data-id="${r.id}" data-f="type" ${r.status === "saved" ? "disabled" : ""}>
+                          <option value="supplier"${r.f.type === "supplier" ? " selected" : ""}>Supplier</option>
+                          <option value="expense"${r.f.type === "expense" ? " selected" : ""}>Expense</option></select></td>
+                    <td>${inp(r, "payee_name", "text", 'style="min-width:160px"')}</td>
+                    <td>${inp(r, "ref_number", "text", 'style="min-width:110px"')}</td>
+                    <td>${inp(r, "invoice_date", "date")}</td>
+                    <td style="white-space:nowrap">
+                      <select class="bt-f" data-id="${r.id}" data-f="currency" style="width:auto" ${r.status === "saved" ? "disabled" : ""}>${SP_CURRENCIES.map((c) => `<option${c === (r.f.currency || "IDR") ? " selected" : ""}>${c}</option>`).join("")}</select>
+                      ${inp(r, "amount", "number", 'step="0.01" min="0" style="width:130px"')}
+                      ${r.docTotal && r.mismatch ? `<div class="paytiny" style="color:var(--amber)">invoice says ${esc(money(r.docTotal, r.f.currency || "IDR"))}</div>` : ""}
+                      ${r.idr_estimate && (r.f.currency || "IDR") !== "IDR" ? `<div class="paytiny">≈ ${esc(money(r.idr_estimate, "IDR"))} est.</div>` : ""}
+                    </td>
+                    <td class="paytiny">${r.f.type === "supplier" ? `${(r.items || []).length} item${(r.items || []).length === 1 ? "" : "s"}${(r.charges || []).length ? ` + ${r.charges.length} biaya` : ""}` : "—"}</td>
+                    <td>${badge(r)}${r.status === "error" && r.error ? `<div class="paytiny" style="color:var(--red);max-width:160px">${esc(r.error)}</div>` : ""}${r.repaired ? `<div class="paytiny" style="color:var(--amber);max-width:160px">prices corrected to the printed totals — check</div>` : ""}</td>
+                    <td>${r.status === "saved" ? "" : `<button class="btn btn-ghost btn-sm bt-del" data-id="${r.id}" title="Remove">✕</button>`}</td>
+                  </tr>`).join("")}</tbody>
+              </table></div>
+              <p id="bt-msg" class="msg"></p>`
+            : ""
+        }
+      </div>`;
+
+    $("#bt-default-type").addEventListener("change", (e) => (state.batchDefault = e.target.value));
+    $("#bt-files").addEventListener("change", (e) => {
+      const type = state.batchDefault === "expense" ? "expense" : "supplier";
+      [...e.target.files].forEach((file) => {
+        if (file.size > 10 * 1024 * 1024) { toast(`${file.name} is over 10 MB — skipped`, "error"); return; }
+        rows.push({ id: Math.random().toString(36).slice(2), file, status: "queued", f: { type, currency: "IDR", title: "", payee_name: "" }, items: [], charges: [] });
+      });
+      renderBatchForm(root);
+      readBatch(root);
+    });
+    $$(".bt-f", root).forEach((el2) =>
+      el2.addEventListener("change", () => {
+        const r = rows.find((x) => x.id === el2.dataset.id); if (!r) return;
+        r.f[el2.dataset.f] = el2.value;
+        if (el2.dataset.f === "amount" && r.docTotal) r.mismatch = Math.abs(Number(el2.value) - r.docTotal) > Math.max(1, r.docTotal * 0.005);
+        if (el2.dataset.f === "type" || el2.dataset.f === "amount") renderBatchForm(root);
+      })
+    );
+    $$(".bt-del", root).forEach((b) => b.addEventListener("click", () => { state.batchRows = rows.filter((x) => x.id !== b.dataset.id); renderBatchForm(root); }));
+    $("#bt-read")?.addEventListener("click", () => {
+      rows.forEach((r) => { if (r.status !== "saved" && r.status !== "reading") r.status = "queued"; });
+      renderBatchForm(root); readBatch(root);
+    });
+    $("#bt-submit")?.addEventListener("click", () => submitBatch(root));
+  }
+
+  // what the single forms do with a read document, applied to one row
+  function fillBatchRow(r, p) {
+    const cur = String(p.currency || "IDR").toUpperCase();
+    const items = (Array.isArray(p.items) ? p.items : []).filter((it) => it && it.item_name).map((it) => ({
+      item_name: it.item_name, qty: it.qty != null && it.qty > 0 ? Number(it.qty) : 1,
+      unit_price: Number(it.unit_price) || 0, ...(it.item_code ? { item_code: it.item_code } : {}),
+    }));
+    const charges = (Array.isArray(p.charges) ? p.charges : []).filter((c) => c && c.name).map((c) => ({ name: c.name, amount: Number(c.amount) || 0 }));
+    const lines = items.reduce((s, it) => s + it.qty * it.unit_price, 0) + charges.reduce((s, c) => s + c.amount, 0);
+    const docTotal = Number(p.total) || 0;
+    r.items = items; r.charges = charges;
+    r.f.currency = cur;
+    r.f.payee_name = p.supplier || r.f.payee_name || "";
+    r.f.ref_number = p.ref_number || "";
+    r.f.invoice_date = p.invoice_date || "";
+    r.f.transaction_date = p.due_date || p.invoice_date || "";
+    r.f.bank_name = p.bank_name || ""; r.f.bank_account_number = p.bank_account_number || ""; r.f.bank_account_name = p.bank_account_name || "";
+    r.f.buyer = p.buyer || ""; r.f.payment_terms = p.payment_terms || "";
+    r.gross = Number(p.gross_subtotal) || null; r.discount = Number(p.discount_total) || null;
+    r.fx_rate = p.fx_rate || null; r.idr_estimate = p.idr_total || null;
+    r.repaired = !!p.repaired;
+    if (r.f.type === "supplier" && items.length) {
+      r.f.amount = Math.round(lines * 100) / 100;
+      r.f.title = r.f.title || (p.supplier ? `Supplier payment — ${p.supplier}` : "Supplier payment");
+      r.docTotal = docTotal; r.mismatch = docTotal > 0 && Math.abs(docTotal - lines) > Math.max(1, docTotal * 0.005);
+    } else {
+      r.f.type = r.f.type === "supplier" && !items.length ? "expense" : r.f.type;
+      r.f.amount = docTotal || Math.round(lines * 100) / 100 || "";
+      r.f.title = r.f.title || (p.supplier ? (p.ref_number ? `${p.supplier} — ${p.ref_number}` : String(p.supplier)) : "");
+      const bits = [];
+      if (p.ref_number) bits.push("Invoice " + p.ref_number);
+      items.forEach((it) => bits.push(`${it.item_name}${it.qty > 1 ? " ×" + it.qty : ""}`));
+      charges.forEach((c) => bits.push(`${c.name}: ${money(c.amount, cur)}`));
+      r.f.description = bits.join("\n");
+      r.docTotal = 0; r.mismatch = false;
+    }
+  }
+
+  // two files at a time: the reader is slow per document, and more than two
+  // in flight just queues at the function
+  async function readBatch(root) {
+    const rows = state.batchRows || [];
+    const queue = rows.filter((r) => r.status === "queued");
+    if (!queue.length) return;
+    const worker = async () => {
+      let r;
+      while ((r = queue.shift())) {
+        r.status = "reading"; r.error = ""; renderBatchForm(root);
+        try { fillBatchRow(r, await readDocument(r.file, "invoice")); r.status = "ready"; }
+        catch (err) { r.status = "error"; r.error = friendlyError(err); }
+        renderBatchForm(root);
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    const n = rows.filter((x) => x.status === "ready").length;
+    toast(`${n} of ${rows.length} file${rows.length === 1 ? "" : "s"} read — check the rows, then submit`);
+  }
+
+  async function submitBatch(root) {
+    const rows = state.batchRows || [];
+    const todo = rows.filter((r) => r.status !== "saved" && r.status !== "reading" && r.f.payee_name && Number(r.f.amount) > 0);
+    if (!todo.length) { toast("Nothing ready to submit — each row needs a payee and an amount", "error"); return; }
+    const flagged = todo.filter((r) => r.mismatch).length;
+    if (flagged && !confirm(`${flagged} row${flagged === 1 ? "" : "s"} do${flagged === 1 ? "es" : ""} not add up to the printed invoice total.\n\nSubmit anyway? (Cancel to fix them first.)`)) return;
+    if (!confirm(`Submit ${todo.length} payment request${todo.length === 1 ? "" : "s"}?`)) return;
+    const msg = $("#bt-msg"); if (msg) { msg.className = "msg"; msg.textContent = "Submitting…"; }
+    let ok = 0, failed = 0;
+    for (const r of todo) {
+      try {
+        const cur = r.f.currency || "IDR";
+        const amount = Number(r.f.amount);
+        // a foreign request never saves without a rupiah estimate
+        let fx = r.fx_rate, est = r.idr_estimate;
+        if (cur !== "IDR" && !est) { const rate = await fetchIdrRate(cur); if (rate) { fx = rate; est = Math.round(amount * rate); } }
+        const safe = r.file.name.replace(/[^\w.\-]+/g, "_").slice(-60);
+        const invoicePath = `${state.user.id}/${Date.now()}-${safe}`;
+        const up = await sb.storage.from("invoices").upload(invoicePath, r.file, { cacheControl: "3600", upsert: false });
+        if (up.error) throw up.error;
+        const isSup = r.f.type === "supplier";
+        const payload = {
+          requester_id: state.user.id,
+          request_type: isSup ? "supplier" : "expense",
+          title: (r.f.title || "").trim() || (isSup ? `Supplier payment — ${r.f.payee_name}` : r.f.payee_name),
+          payee_name: r.f.payee_name.trim(),
+          ref_number: (r.f.ref_number || "").trim() || null,
+          amount, currency: cur,
+          fx_rate: cur === "IDR" ? null : fx || null,
+          idr_estimate: cur === "IDR" ? null : est || null,
+          items: isSup && r.items.length ? withLandedCost(r.items, r.charges) : null,
+          charges: isSup && r.charges.length ? r.charges : null,
+          invoice_date: r.f.invoice_date || null,
+          buyer: isSup ? (r.f.buyer || null) : null,
+          payment_terms: isSup ? (r.f.payment_terms || null) : null,
+          gross_subtotal: isSup ? r.gross : null,
+          discount_total: isSup ? r.discount : null,
+          transaction_date: r.f.transaction_date || r.f.invoice_date || null,
+          bank_name: r.f.bank_name || null,
+          bank_account_name: r.f.bank_account_name || null,
+          bank_account_number: r.f.bank_account_number || null,
+          description: (r.f.description || "").trim() || null,
+          invoice_path: invoicePath,
+        };
+        const { error } = await sb.from("payment_requests").insert(payload);
+        if (error) throw error;
+        r.status = "saved"; ok++;
+      } catch (err) {
+        r.status = "error"; r.error = friendlyError(err); failed++;
+      }
+      renderBatchForm(root);
+    }
+    state.purchAll = null; state.expAll = null;
+    const m2 = $("#bt-msg");
+    if (m2) { m2.className = failed ? "msg error" : "msg ok"; m2.textContent = `${ok} request${ok === 1 ? "" : "s"} submitted${failed ? `, ${failed} failed — see the rows` : ""} ✔`; }
+    toast(`${ok} payment request${ok === 1 ? "" : "s"} submitted${failed ? ` · ${failed} failed` : ""}`, failed ? "error" : "ok");
+    if (!failed) { state.batchRows = []; setTimeout(() => (location.hash = "#dashboard"), 900); }
   }
 
   // Send a file to the parse function and return the extracted data.
