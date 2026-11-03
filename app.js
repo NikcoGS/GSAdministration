@@ -877,11 +877,12 @@
             <textarea name="description" placeholder="Any extra detail the approver should know"></textarea>
           </label>
           <div class="full">
-            <label>Invoice / bill attachment</label>
+            <label>Invoice / bill attachments</label>
             <label class="file-drop" id="file-drop">
-              <input type="file" name="invoice" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif" />
-              <span id="file-label">📎 Click to attach a PDF or image (max 10&nbsp;MB)</span>
+              <input type="file" name="invoice" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif" />
+              <span id="file-label">📎 Click to attach PDFs or images (max 10&nbsp;MB each)</span>
             </label>
+            <div class="file-list" id="file-list"></div>
             <button type="button" class="btn btn-ghost btn-sm hidden" id="pr-parse" style="margin-top:8px">✨ Read details from invoice</button>
           </div>
         </div>
@@ -893,15 +894,14 @@
       </form>`;
 
     const fileInput = $('#pr-form input[name=invoice]');
-    fileInput.addEventListener("change", () => {
-      const f = fileInput.files[0];
-      $("#file-label").innerHTML = f
-        ? '<span class="file-name">📎 ' + esc(f.name) + "</span> — click to change"
-        : "📎 Click to attach a PDF or image (max 10&nbsp;MB)";
-      $("#pr-parse").classList.toggle("hidden", !f);
+    wireMultiFile(fileInput, $("#file-label"), $("#file-list"), "📎 Click to attach PDFs or images (max 10&nbsp;MB each)", {
+      onChange: (files) => {
+        $("#pr-parse").classList.toggle("hidden", !files.length);
+        $("#pr-parse").textContent = files.length > 1 ? "✨ Read details from the first file" : "✨ Read details from invoice";
+      },
     });
 
-    $("#pr-parse").addEventListener("click", () => parseExpenseInvoice(fileInput.files[0]));
+    $("#pr-parse").addEventListener("click", () => parseExpenseInvoice(pickedFiles(fileInput)[0]));
     $("#pr-form").addEventListener("submit", submitRequest);
   }
 
@@ -972,10 +972,11 @@
     const form = e.target;
     const btn = form.querySelector("button[type=submit]");
     const msg = $("#pr-msg");
-    const file = form.invoice.files[0];
+    const files = pickedFiles(form.invoice);
 
-    if (file && file.size > 10 * 1024 * 1024) {
-      msg.textContent = "File is larger than 10 MB.";
+    const big = oversized(files);
+    if (big) {
+      msg.textContent = `"${big.name}" is larger than 10 MB.`;
       msg.className = "msg error";
       return;
     }
@@ -985,16 +986,7 @@
     msg.textContent = "Submitting…";
 
     try {
-      let invoicePath = null;
-      if (file) {
-        const safe = file.name.replace(/[^\w.\-]+/g, "_").slice(-60);
-        invoicePath = `${state.user.id}/${Date.now()}-${safe}`;
-        const up = await sb.storage.from("invoices").upload(invoicePath, file, {
-          cacheControl: "3600",
-          upsert: false,
-        });
-        if (up.error) throw up.error;
-      }
+      const paths = await uploadAll("invoices", files);
 
       const payload = {
         requester_id: state.user.id,
@@ -1007,7 +999,8 @@
         bank_account_name: form.bank_account_name.value.trim() || null,
         bank_account_number: form.bank_account_number.value.trim() || null,
         description: form.description.value.trim() || null,
-        invoice_path: invoicePath,
+        invoice_path: paths[0] || null,
+        invoice_paths: paths.length ? paths : null,
       };
 
       const { error } = await sb.from("payment_requests").insert(payload);
@@ -1083,11 +1076,12 @@
             <textarea name="description" placeholder="Any extra detail the approver should know"></textarea>
           </label>
           <div class="full">
-            <label>Invoice / PO attachment</label>
+            <label>Invoice / PO attachments</label>
             <label class="file-drop">
-              <input type="file" name="invoice" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif" />
-              <span id="sp-file-label">📎 Click to attach the supplier invoice or PO</span>
+              <input type="file" name="invoice" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif" />
+              <span id="sp-file-label">📎 Click to attach the supplier invoice, PO, or both</span>
             </label>
+            <div class="file-list" id="sp-file-list"></div>
             <button type="button" class="btn btn-ghost btn-sm hidden" id="sp-parse" style="margin-top:8px">✨ Read items &amp; prices from invoice</button>
           </div>
         </div>
@@ -1153,12 +1147,13 @@
     $('#sp-form select[name=currency]').addEventListener("change", recomputeSp);
 
     const fi = $('#sp-form input[name=invoice]');
-    fi.addEventListener("change", () => {
-      const f = fi.files[0];
-      $("#sp-file-label").innerHTML = f ? '<span class="file-name">📎 ' + esc(f.name) + "</span> — click to change" : "📎 Click to attach the supplier invoice or PO";
-      $("#sp-parse").classList.toggle("hidden", !f);
+    wireMultiFile(fi, $("#sp-file-label"), $("#sp-file-list"), "📎 Click to attach the supplier invoice, PO, or both", {
+      onChange: (files) => {
+        $("#sp-parse").classList.toggle("hidden", !files.length);
+        $("#sp-parse").innerHTML = files.length > 1 ? "✨ Read items &amp; prices from the first file" : "✨ Read items &amp; prices from invoice";
+      },
     });
-    $("#sp-parse").addEventListener("click", () => parseInvoice(fi.files[0]));
+    $("#sp-parse").addEventListener("click", () => parseInvoice(pickedFiles(fi)[0]));
 
     $("#sp-form").addEventListener("submit", submitSupplier);
   }
@@ -1312,8 +1307,9 @@
     const form = e.target;
     const btn = form.querySelector("button[type=submit]");
     const msg = $("#sp-msg");
-    const file = form.invoice.files[0];
-    if (file && file.size > 10 * 1024 * 1024) { msg.textContent = "File is larger than 10 MB."; msg.className = "msg error"; return; }
+    const files = pickedFiles(form.invoice);
+    const big = oversized(files);
+    if (big) { msg.textContent = `"${big.name}" is larger than 10 MB.`; msg.className = "msg error"; return; }
 
     // collect priced lines
     const items = [];
@@ -1362,13 +1358,7 @@
     }
 
     try {
-      let invoicePath = null;
-      if (file) {
-        const safe = file.name.replace(/[^\w.\-]+/g, "_").slice(-60);
-        invoicePath = `${state.user.id}/${Date.now()}-${safe}`;
-        const up = await sb.storage.from("invoices").upload(invoicePath, file, { cacheControl: "3600", upsert: false });
-        if (up.error) throw up.error;
-      }
+      const paths = await uploadAll("invoices", files);
 
       const payload = {
         requester_id: state.user.id,
@@ -1392,17 +1382,19 @@
         bank_account_name: form.bank_account_name.value.trim() || null,
         bank_account_number: form.bank_account_number.value.trim() || null,
         description: form.description.value.trim() || null,
-        invoice_path: invoicePath,
+        invoice_path: paths[0] || null,
+        invoice_paths: paths.length ? paths : null,
       };
 
       const { error } = await sb.from("payment_requests").insert(payload);
       if (error) throw error;
 
-      // file the invoice in Drive and refresh the sheet (best effort)
-      if (file) {
+      // file the invoice(s) in Drive and refresh the sheet (best effort)
+      files.forEach((file, i) => {
         const ext = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".")) : "";
-        syncFileToDrive(file, `${safeName(payload.ref_number || payload.title)} - invoice - ${safeName(payload.payee_name)}${ext}`);
-      }
+        const nth = i ? ` ${i + 1}` : "";
+        syncFileToDrive(file, `${safeName(payload.ref_number || payload.title)} - invoice${nth} - ${safeName(payload.payee_name)}${ext}`);
+      });
       state.purchAll = null; state.expAll = null; // purchasing book must reload
       syncToGoogleSheet({ silent: true });
 
@@ -1493,19 +1485,19 @@
           <div class="full">
             <label for="map-input">Google Map Screenshots <span class="hint">(required)</span></label>
             <label class="file-drop" id="map-drop">
-              <input type="file" id="map-input" name="map_screenshot" accept="image/*,.pdf" />
-              <span id="map-label">🗺️ Tap to attach the Google Maps route screenshot</span>
-              <img id="map-preview" class="file-preview" alt="" hidden />
+              <input type="file" id="map-input" name="map_screenshot" multiple accept="image/*,.pdf" />
+              <span id="map-label">🗺️ Tap to attach the Google Maps route screenshots</span>
             </label>
-            <small class="hint">Take a screenshot of the route in Google Maps first, then pick it from your photos here.</small>
+            <div class="file-list" id="map-list"></div>
+            <small class="hint">Take a screenshot of the route in Google Maps first, then pick it from your photos here. Several legs? Attach one screenshot per leg.</small>
           </div>
           <div class="full">
-            <label for="receipt-input">Trip Receipt</label>
+            <label for="receipt-input">Trip Receipts</label>
             <label class="file-drop" id="receipt-drop">
-              <input type="file" id="receipt-input" name="receipt" accept="image/*,.pdf" />
-              <span id="receipt-label">📎 Tap to attach the trip receipt (toll / parking / fuel)</span>
-              <img id="receipt-preview" class="file-preview" alt="" hidden />
+              <input type="file" id="receipt-input" name="receipt" multiple accept="image/*,.pdf" />
+              <span id="receipt-label">📎 Tap to attach the trip receipts (toll / parking / fuel)</span>
             </label>
+            <div class="file-list" id="receipt-list"></div>
           </div>
         </div>
         <div class="grand">
@@ -1519,27 +1511,8 @@
         <p id="trip-msg" class="msg"></p>
       </form>`;
 
-    const wireFile = (inputName, labelId, previewId, defaultText) => {
-      const inp = $(`#trip-form input[name=${inputName}]`);
-      const preview = $("#" + previewId);
-      inp.addEventListener("change", () => {
-        const f = inp.files[0];
-        const drop = inp.closest(".file-drop");
-        drop.classList.toggle("has-file", !!f);
-        if (preview.src) URL.revokeObjectURL(preview.src);
-        preview.hidden = true;
-        if (f && f.type.startsWith("image/")) {
-          preview.src = URL.createObjectURL(f);
-          preview.hidden = false;
-        }
-        const kb = f ? Math.round(f.size / 1024) : 0;
-        $("#" + labelId).innerHTML = f
-          ? `<span class="file-name">✅ ${esc(f.name)}</span> · ${kb >= 1024 ? (kb / 1024).toFixed(1) + " MB" : kb + " KB"} — tap to change`
-          : defaultText;
-      });
-    };
-    wireFile("map_screenshot", "map-label", "map-preview", "🗺️ Tap to attach the Google Maps route screenshot");
-    wireFile("receipt", "receipt-label", "receipt-preview", "📎 Tap to attach the trip receipt (toll / parking / fuel)");
+    wireMultiFile($("#map-input"), $("#map-label"), $("#map-list"), "🗺️ Tap to attach the Google Maps route screenshots");
+    wireMultiFile($("#receipt-input"), $("#receipt-label"), $("#receipt-list"), "📎 Tap to attach the trip receipts (toll / parking / fuel)");
 
     const form = $("#trip-form");
     const recalcTrip = () => {
@@ -1572,10 +1545,10 @@
     const form = e.target;
     const btn = form.querySelector("button[type=submit]");
     const msg = $("#trip-msg");
-    const mapFile = form.map_screenshot.files[0];
-    const receiptFile = form.receipt.files[0];
+    const mapFiles = pickedFiles(form.map_screenshot);
+    const receiptFiles = pickedFiles(form.receipt);
 
-    if (!mapFile) {
+    if (!mapFiles.length) {
       msg.textContent = "Attach the Google Maps screenshot of the route — it is required for every trip claim.";
       msg.className = "msg error";
       const box = $("#map-drop");
@@ -1585,12 +1558,11 @@
       return;
     }
 
-    for (const f of [mapFile, receiptFile]) {
-      if (f && f.size > 10 * 1024 * 1024) {
-        msg.textContent = "Each file must be under 10 MB.";
-        msg.className = "msg error";
-        return;
-      }
+    const big = oversized([...mapFiles, ...receiptFiles]);
+    if (big) {
+      msg.textContent = `"${big.name}" is over 10 MB — each file must be under 10 MB.`;
+      msg.className = "msg error";
+      return;
     }
 
     // recompute from the policy rate rather than trusting the read-only field
@@ -1608,18 +1580,9 @@
     msg.className = "msg";
     msg.textContent = "Submitting…";
 
-    const uploadTo = async (file, tag) => {
-      if (!file) return null;
-      const safe = file.name.replace(/[^\w.\-]+/g, "_").slice(-50);
-      const path = `${state.user.id}/${tag}-${Date.now()}-${safe}`;
-      const up = await sb.storage.from("trip-files").upload(path, file, { cacheControl: "3600", upsert: false });
-      if (up.error) throw up.error;
-      return path;
-    };
-
     try {
-      const mapPath = await uploadTo(mapFile, "map");
-      const receiptPath = await uploadTo(receiptFile, "receipt");
+      const mapPaths = await uploadAll("trip-files", mapFiles, "map");
+      const receiptPaths = await uploadAll("trip-files", receiptFiles, "receipt");
 
       const items = $$('#trip-form input[name=claim_item]:checked').map((c) => c.value);
 
@@ -1636,8 +1599,10 @@
         currency: "IDR",
         claim_items: items,
         claim_items_other: form.claim_items_other.value.trim() || null,
-        map_screenshot_path: mapPath,
-        receipt_path: receiptPath,
+        map_screenshot_path: mapPaths[0],
+        map_screenshot_paths: mapPaths,
+        receipt_path: receiptPaths[0] || null,
+        receipt_paths: receiptPaths.length ? receiptPaths : null,
       };
 
       const { error } = await sb.from("trip_reimbursements").insert(payload);
@@ -1732,18 +1697,20 @@
       <div class="line-row">
         <input type="text" class="ln-ket" placeholder="Description of expense" />
         <input type="number" class="ln-amt" step="0.01" min="0" placeholder="0" />
-        <label class="ln-file-btn" title="Attach receipt photo">📷
-          <input type="file" class="ln-file" accept="image/*,.pdf" />
+        <label class="ln-file-btn" title="Attach receipt photos — tap again to add another">📷
+          <input type="file" class="ln-file" multiple accept="image/*,.pdf" />
         </label>
         <button type="button" class="ln-del" title="Remove line">✕</button>
+        <div class="file-list ln-files"></div>
       </div>`);
 
     row.querySelector(".ln-amt").addEventListener("input", recomputePettyTotal);
-    row.querySelector(".ln-file").addEventListener("change", (e) => {
-      const btn = row.querySelector(".ln-file-btn");
-      const has = e.target.files.length > 0;
-      btn.classList.toggle("has-file", has);
-      btn.firstChild.textContent = has ? "✓" : "📷";
+    const fileBtn = row.querySelector(".ln-file-btn");
+    wireMultiFile(row.querySelector(".ln-file"), null, row.querySelector(".ln-files"), "", {
+      onChange: (files) => {
+        fileBtn.classList.toggle("has-file", files.length > 0);
+        fileBtn.firstChild.textContent = files.length ? "✓" + (files.length > 1 ? files.length : "") : "📷";
+      },
     });
     row.querySelector(".ln-del").addEventListener("click", () => {
       row.remove();
@@ -1772,11 +1739,12 @@
     for (const row of rowEls) {
       const keterangan = row.querySelector(".ln-ket").value.trim();
       const amountRaw = row.querySelector(".ln-amt").value;
-      const file = row.querySelector(".ln-file").files[0] || null;
-      if (!keterangan && !amountRaw && !file) continue; // skip blank row
+      const files = pickedFiles(row.querySelector(".ln-file"));
+      if (!keterangan && !amountRaw && !files.length) continue; // skip blank row
       if (!keterangan) { msg.textContent = "Every line needs a keterangan (description)."; msg.className = "msg error"; return; }
-      if (file && file.size > 10 * 1024 * 1024) { msg.textContent = `"${file.name}" is over 10 MB.`; msg.className = "msg error"; return; }
-      lines.push({ keterangan, amount: Number(amountRaw) || 0, file });
+      const big = oversized(files);
+      if (big) { msg.textContent = `"${big.name}" is over 10 MB.`; msg.className = "msg error"; return; }
+      lines.push({ keterangan, amount: Number(amountRaw) || 0, files });
     }
     if (!lines.length) { msg.textContent = "Add at least one line."; msg.className = "msg error"; return; }
 
@@ -1808,19 +1776,14 @@
       const lineRows = [];
       for (let i = 0; i < lines.length; i++) {
         const l = lines[i];
-        let picturePath = null;
-        if (l.file) {
-          const safe = l.file.name.replace(/[^\w.\-]+/g, "_").slice(-50);
-          picturePath = `${state.user.id}/${claimId}/${i}-${Date.now()}-${safe}`;
-          const up = await sb.storage.from("petty-cash").upload(picturePath, l.file, { cacheControl: "3600", upsert: false });
-          if (up.error) throw up.error;
-        }
+        const paths = await uploadAll("petty-cash", l.files, `${claimId}/${i}`);
         lineRows.push({
           claim_id: claimId,
           requester_id: state.user.id,
           keterangan: l.keterangan,
           amount: l.amount,
-          picture_path: picturePath,
+          picture_path: paths[0] || null,
+          picture_paths: paths.length ? paths : null,
           position: i,
         });
       }
@@ -2156,11 +2119,12 @@
             <textarea name="notes" placeholder="Anything the checker should know"></textarea>
           </label>
           <div class="full">
-            <label>PO / Invoice attachment</label>
+            <label>PO / Invoice attachments</label>
             <label class="file-drop">
-              <input type="file" name="attachment" accept="image/*,.pdf" />
-              <span id="recv-file-label">📎 Click to attach the PO or supplier invoice</span>
+              <input type="file" name="attachment" multiple accept="image/*,.pdf" />
+              <span id="recv-file-label">📎 Click to attach the PO, supplier invoice, or both</span>
             </label>
+            <div class="file-list" id="recv-file-list"></div>
             <button type="button" class="btn btn-ghost btn-sm hidden" id="recv-parse" style="margin-top:8px">✨ Read items from PO</button>
           </div>
         </div>
@@ -2192,9 +2156,6 @@
         if (it.unit) row.querySelector(".ln-unit").value = it.unit;
       });
       if (!preItems.length) { addItemLine(linesBox); addItemLine(linesBox); addItemLine(linesBox); }
-      if (pre.invoice_path) {
-        $("#recv-file-label").innerHTML = "📎 The purchase's invoice/PO will be attached automatically — or click to attach a different file";
-      }
       $("#recv-form .sub").textContent = "Started from an approved supplier purchase — check the lines, assign a checker, and create.";
     } else {
       addItemLine(linesBox); addItemLine(linesBox); addItemLine(linesBox);
@@ -2202,13 +2163,17 @@
     $("#recv-add-line").addEventListener("click", () => addItemLine(linesBox));
 
     const fi = $('#recv-form input[name=attachment]');
-    fi.addEventListener("change", () => {
-      const f = fi.files[0];
-      $("#recv-file-label").innerHTML = f ? '<span class="file-name">📎 ' + esc(f.name) + "</span>" : "📎 Click to attach the PO or supplier invoice";
-      $("#recv-parse").classList.toggle("hidden", !f);
+    const recvDefault = pre && filesOf(pre, "invoice_path").length
+      ? "📎 The purchase's invoice/PO will be attached automatically — or add different files here"
+      : "📎 Click to attach the PO, supplier invoice, or both";
+    wireMultiFile(fi, $("#recv-file-label"), $("#recv-file-list"), recvDefault, {
+      onChange: (files) => {
+        $("#recv-parse").classList.toggle("hidden", !files.length);
+        $("#recv-parse").textContent = files.length > 1 ? "✨ Read items from the first file" : "✨ Read items from PO";
+      },
     });
 
-    $("#recv-parse").addEventListener("click", () => parsePO(fi.files[0], linesBox));
+    $("#recv-parse").addEventListener("click", () => parsePO(pickedFiles(fi)[0], linesBox));
 
     $("#recv-form").addEventListener("submit", submitReceiving);
   }
@@ -2277,31 +2242,27 @@
     const msg = $("#recv-msg");
     const lines = collectItemLines($("#recv-lines"), msg);
     if (!lines) return;
-    const file = form.attachment.files[0];
-    if (file && file.size > 10 * 1024 * 1024) { msg.textContent = "Attachment is over 10 MB."; msg.className = "msg error"; return; }
+    const files = pickedFiles(form.attachment);
+    const big = oversized(files);
+    if (big) { msg.textContent = `"${big.name}" is over 10 MB.`; msg.className = "msg error"; return; }
 
     btn.disabled = true; msg.className = "msg"; msg.textContent = "Creating…";
     let orderId = null;
     try {
-      let attachmentPath = null;
-      if (file) {
-        const safe = file.name.replace(/[^\w.\-]+/g, "_").slice(-50);
-        attachmentPath = `${state.user.id}/${Date.now()}-${safe}`;
-        const up = await sb.storage.from("receiving-files").upload(attachmentPath, file, { upsert: false });
-        if (up.error) throw up.error;
-      }
+      const paths = await uploadAll("receiving-files", files);
       // started from an approved purchase and no new file chosen:
-      // carry the purchase's invoice/PO over so the checker can open it
-      if (!attachmentPath && form._prefill?.invoice_path) {
-        try {
-          const dl = await sb.storage.from("invoices").download(form._prefill.invoice_path);
-          if (dl.data) {
-            const orig = form._prefill.invoice_path.split("/").pop();
-            attachmentPath = `${state.user.id}/${Date.now()}-${orig}`;
-            const cp = await sb.storage.from("receiving-files").upload(attachmentPath, dl.data, { upsert: false });
-            if (cp.error) attachmentPath = null;
-          }
-        } catch { /* attachment copy is best-effort */ }
+      // carry the purchase's invoice/PO files over so the checker can open them
+      if (!paths.length && form._prefill) {
+        for (const src of filesOf(form._prefill, "invoice_path")) {
+          try {
+            const dl = await sb.storage.from("invoices").download(src);
+            if (!dl.data) continue;
+            const orig = src.split("/").pop().replace(/^\d{13}-/, "");
+            const dest = `${state.user.id}/${Date.now()}-${paths.length}-${orig}`;
+            const cp = await sb.storage.from("receiving-files").upload(dest, dl.data, { upsert: false });
+            if (!cp.error) paths.push(dest);
+          } catch { /* attachment copy is best-effort */ }
+        }
       }
       const { data: order, error: oErr } = await sb
         .from("receiving_orders")
@@ -2312,7 +2273,8 @@
           location: form.location.value,
           assigned_to: form.assigned_to.value,
           notes: form.notes.value.trim() || null,
-          attachment_path: attachmentPath,
+          attachment_path: paths[0] || null,
+          attachment_paths: paths.length ? paths : null,
           payment_request_id: form._prefill?.id || null,
         })
         .select().single();
@@ -2377,18 +2339,20 @@
     const docChip = (label, href) =>
       el(`<a class="btn btn-ghost btn-sm" href="${href}" target="_blank" rel="noopener">${esc(label)}</a>`);
 
-    if (r.attachment_path) {
-      const { data } = await sb.storage.from("receiving-files").createSignedUrl(r.attachment_path, 300);
-      if (data) docSlot.append(docChip("📎 View PO / invoice", data.signedUrl));
+    const attached = filesOf(r, "attachment_path");
+    for (const [i, p] of attached.entries()) {
+      const { data } = await sb.storage.from("receiving-files").createSignedUrl(p, 300);
+      if (data) docSlot.append(docChip(attached.length > 1 ? `📎 PO / invoice ${i + 1} of ${attached.length}` : "📎 View PO / invoice", data.signedUrl));
     }
 
     if (r.payment_request_id) {
       const { data: pr } = await sb
         .from("payment_requests").select("*").eq("id", r.payment_request_id).maybeSingle();
       if (pr) {
-        if (!r.attachment_path && pr.invoice_path) {
-          const { data: iu } = await sb.storage.from("invoices").createSignedUrl(pr.invoice_path, 300);
-          if (iu) docSlot.append(docChip("🧾 View supplier invoice", iu.signedUrl));
+        const invs = attached.length ? [] : filesOf(pr, "invoice_path");
+        for (const [i, p] of invs.entries()) {
+          const { data: iu } = await sb.storage.from("invoices").createSignedUrl(p, 300);
+          if (iu) docSlot.append(docChip(invs.length > 1 ? `🧾 Supplier invoice ${i + 1} of ${invs.length}` : "🧾 View supplier invoice", iu.signedUrl));
         }
         (Array.isArray(pr.drive_invoice_files) ? pr.drive_invoice_files : []).forEach((d) => {
           if (d && d.url) docSlot.append(docChip("📄 " + (d.name || "Invoice in Drive"), d.url));
@@ -2401,7 +2365,7 @@
           openDetail(pr, state.profile.role === "admin", {}, "payment", { hidePrices: !seePrices })
         );
         docSlot.append(open);
-      } else if (!r.attachment_path) {
+      } else if (!attached.length) {
         docSlot.append(
           el('<span class="hint">The purchase this came from is not visible to your account — ask an admin for a copy of the invoice.</span>')
         );
@@ -3055,6 +3019,112 @@
     }
   }
 
+  // ---- attachments: every picker takes several files ----------------------
+  // The files a picker has collected so far. Picks add to the set (so a phone
+  // can take one photo after another) and a chip's ✕ removes one, which the
+  // input element's own FileList cannot do.
+  function pickedFiles(input) {
+    return (input && input._files) || [];
+  }
+
+  // Wire a file input to collect many files. A chip per file (name, size, a
+  // thumbnail for images, a remove button) is rendered into listEl; labelEl,
+  // when given, shows the count or defaultText. opts.onChange(files) runs
+  // after every change.
+  function wireMultiFile(input, labelEl, listEl, defaultText, opts = {}) {
+    input.multiple = true;
+    input._files = [];
+    const sizeOf = (f) => {
+      const kb = Math.round(f.size / 1024);
+      return kb >= 1024 ? (kb / 1024).toFixed(1) + " MB" : kb + " KB";
+    };
+    const render = () => {
+      const files = input._files;
+      const drop = input.closest(".file-drop");
+      if (drop) drop.classList.toggle("has-file", files.length > 0);
+      if (labelEl) {
+        labelEl.innerHTML = files.length
+          ? `<span class="file-name">✅ ${files.length} file${files.length === 1 ? "" : "s"} attached</span> — tap to add more`
+          : defaultText;
+      }
+      $$("img.file-thumb", listEl).forEach((img) => URL.revokeObjectURL(img.src));
+      listEl.innerHTML = "";
+      files.forEach((f, i) => {
+        const isImage = (f.type || "").startsWith("image/");
+        const chip = el(`<div class="file-chip">
+          ${isImage ? '<img class="file-thumb" alt="" />' : `<span class="file-ico">${/\.pdf$/i.test(f.name) ? "📄" : "📎"}</span>`}
+          <span class="file-chip-name" title="${esc(f.name)}">${esc(f.name)}</span>
+          <span class="file-chip-size">${sizeOf(f)}</span>
+          <button type="button" class="file-chip-del" title="Remove" aria-label="Remove ${esc(f.name)}">✕</button>
+        </div>`);
+        const img = chip.querySelector("img");
+        if (img) img.src = URL.createObjectURL(f);
+        chip.querySelector(".file-chip-del").addEventListener("click", (e) => {
+          e.preventDefault();
+          input._files.splice(i, 1);
+          render();
+          if (opts.onChange) opts.onChange(input._files);
+        });
+        listEl.append(chip);
+      });
+    };
+    input.addEventListener("change", () => {
+      for (const f of input.files) {
+        const dup = input._files.some((g) => g.name === f.name && g.size === f.size && g.lastModified === f.lastModified);
+        if (!dup) input._files.push(f);
+      }
+      input.value = ""; // so the same file can be picked again after a remove
+      render();
+      if (opts.onChange) opts.onChange(input._files);
+    });
+    render();
+  }
+
+  // The first file over 10 MB, or null. Every bucket caps files at 10 MB.
+  function oversized(files) {
+    return files.find((f) => f.size > 10 * 1024 * 1024) || null;
+  }
+
+  // Upload every picked file to a bucket under the signed-in user's folder
+  // (the storage policies key on that folder). Returns the paths in order.
+  async function uploadAll(bucket, files, tag) {
+    const paths = [];
+    for (const file of files) {
+      const safe = file.name.replace(/[^\w.\-]+/g, "_").slice(-50);
+      const path = `${state.user.id}/${tag ? tag + "-" : ""}${Date.now()}-${paths.length}-${safe}`;
+      const up = await sb.storage.from(bucket).upload(path, file, { cacheControl: "3600", upsert: false });
+      if (up.error) throw up.error;
+      paths.push(path);
+    }
+    return paths;
+  }
+
+  // Every file stored under one column. The first lives in the original
+  // single-path column, the whole list in the *_paths array that came later,
+  // so rows saved before the array existed still show their one file.
+  function filesOf(r, col) {
+    const more = Array.isArray(r[col + "s"]) ? r[col + "s"] : [];
+    return [...new Set([r[col], ...more].filter(Boolean))];
+  }
+
+  // The original file name behind a storage path (the upload prefix removed).
+  function fileLabel(path) {
+    const base = String(path || "").split("/").pop().replace(/^(?:[a-z0-9]+-)?\d{13}-(?:\d+-)?/, "");
+    return base.length > 34 ? base.slice(0, 32) + "…" : base;
+  }
+
+  // Link descriptors for every file under a column: the single label when
+  // there is one file, "<plural> 1 of n" when there are several.
+  function fileLinks(r, col, bucket, single, plural) {
+    const paths = filesOf(r, col);
+    return paths.map((path, i) => ({
+      bucket,
+      path,
+      label: paths.length > 1 ? `${plural} ${i + 1} of ${paths.length}` : single,
+      title: fileLabel(path),
+    }));
+  }
+
   // Upload one attachment into the Drive folder (best effort, non-blocking).
   async function syncFileToDrive(file, filename) {
     if (!googleSyncOn() || !cfg.GOOGLE_DRIVE_FOLDER_ID || !file) return;
@@ -3248,10 +3318,11 @@
                   const foreign = (r.currency || "IDR") !== "IDR";
                   // an estimate, not a settled figure: foreign and not yet repriced
                   const estimated = foreign && r.idr_actual == null;
+                  const nFiles = filesOf(r, "invoice_path").length;
                   const docs =
                     (Array.isArray(r.drive_invoice_files) && r.drive_invoice_files.length ? "📄" : "") +
                     (Array.isArray(r.drive_payment_files) && r.drive_payment_files.length ? "🧾" : "") +
-                    (r.invoice_path ? "📎" : "");
+                    (nFiles ? "📎" + (nFiles > 1 ? nFiles : "") : "");
                   return `<tr data-id="${r.id}">
                     <td>${esc(r.ref_number || "—")}${docs ? ` <span title="documents attached">${docs}</span>` : ""}</td>
                     <td>${fmtDate(r.invoice_date || r.created_at)}</td>
@@ -3493,8 +3564,8 @@
   }
 
   async function downloadInvoicesZip(list, btn) {
-    const withFile = list.filter((r) => r.invoice_path);
-    const driveOnly = list.filter((r) => !r.invoice_path && Array.isArray(r.drive_invoice_files) && r.drive_invoice_files.length);
+    const withFile = list.filter((r) => filesOf(r, "invoice_path").length);
+    const driveOnly = list.filter((r) => !filesOf(r, "invoice_path").length && Array.isArray(r.drive_invoice_files) && r.drive_invoice_files.length);
     if (!withFile.length && !driveOnly.length) { toast("None of these invoices has a file attached", "error"); return; }
 
     const label = btn ? btn.textContent : "";
@@ -3507,23 +3578,24 @@
       const index = [["Invoice No", "Invoice Date", "Supplier", "Amount", "Currency", "File in zip", "Drive link(s)", "Note"]];
       let done = 0, failed = 0;
 
-      for (const r of withFile) {
-        say(`📦 ${done + 1} of ${withFile.length}…`);
-        const ext = (r.invoice_path.match(/\.[a-z0-9]{2,5}$/i) || [".pdf"])[0].toLowerCase();
-        let name = `${safeName(r.ref_number || r.title || "invoice")} — ${safeName(r.payee_name || "")}`.replace(/ — $/, "");
-        let candidate = name + ext, n = 2;
-        while (used.has(candidate.toLowerCase())) candidate = `${name} (${n++})${ext}`;
-        used.add(candidate.toLowerCase());
-
-        const { data, error } = await sb.storage.from("invoices").download(r.invoice_path);
-        if (error || !data) {
-          failed++;
-          index.push([r.ref_number || "", r.invoice_date || "", r.payee_name || "", r.amount ?? "", r.currency || "IDR", "", "", "file could not be read: " + (error?.message || "missing")]);
-          continue;
+      for (const [k, r] of withFile.entries()) {
+        say(`📦 ${k + 1} of ${withFile.length}…`);
+        const name = `${safeName(r.ref_number || r.title || "invoice")} — ${safeName(r.payee_name || "")}`.replace(/ — $/, "");
+        const inZip = [], problems = [];
+        // an invoice with several files gets "name.pdf", "name (2).jpg", …
+        for (const path of filesOf(r, "invoice_path")) {
+          const ext = (path.match(/\.[a-z0-9]{2,5}$/i) || [".pdf"])[0].toLowerCase();
+          let candidate = name + ext, n = 2;
+          while (used.has(candidate.toLowerCase())) candidate = `${name} (${n++})${ext}`;
+          const { data, error } = await sb.storage.from("invoices").download(path);
+          if (error || !data) { problems.push("file could not be read: " + (error?.message || "missing")); continue; }
+          used.add(candidate.toLowerCase());
+          zip.file(candidate, data);
+          inZip.push(candidate);
         }
-        zip.file(candidate, data);
-        done++;
-        index.push([r.ref_number || "", r.invoice_date || "", r.payee_name || "", r.amount ?? "", r.currency || "IDR", candidate, "", ""]);
+        done += inZip.length;
+        if (!inZip.length) failed++;
+        index.push([r.ref_number || "", r.invoice_date || "", r.payee_name || "", r.amount ?? "", r.currency || "IDR", inZip.join(" | "), "", problems.join("; ")]);
       }
       driveOnly.forEach((r) => {
         index.push([r.ref_number || "", r.invoice_date || "", r.payee_name || "", r.amount ?? "", r.currency || "IDR", "",
@@ -5255,8 +5327,8 @@
         ["Submitted", fmtDate(r.created_at)]
       );
       files = [
-        { label: "🗺️ View Google Map screenshot", bucket: "trip-files", path: r.map_screenshot_path },
-        { label: "📎 View trip receipt", bucket: "trip-files", path: r.receipt_path },
+        ...fileLinks(r, "map_screenshot_path", "trip-files", "🗺️ View Google Map screenshot", "🗺️ Map screenshot"),
+        ...fileLinks(r, "receipt_path", "trip-files", "📎 View trip receipt", "📎 Trip receipt"),
       ];
     } else if (type === "petty") {
       rows = [
@@ -5295,7 +5367,7 @@
       // The invoice is offered even where prices are hidden (receiving): the
       // checker needs it to compare the goods against, and anyone who can open
       // this purchase is its requester or already has view-all rights.
-      files = [{ label: "📎 View invoice / bill", bucket: "invoices", path: r.invoice_path }];
+      files = fileLinks(r, "invoice_path", "invoices", "📎 View invoice / bill", "📎 Invoice / bill");
     }
 
     if (r.status !== "pending") {
@@ -5418,11 +5490,13 @@
       } else {
         const lineRows = await Promise.all(
           (lines || []).map(async (ln, i) => {
-            let link = "—";
-            if (ln.picture_path) {
-              const { data } = await sb.storage.from("petty-cash").createSignedUrl(ln.picture_path, 120);
-              if (data) link = `<a href="${data.signedUrl}" target="_blank" rel="noopener">📎 View</a>`;
+            const pics = filesOf(ln, "picture_path");
+            const links = [];
+            for (const [k, p] of pics.entries()) {
+              const { data } = await sb.storage.from("petty-cash").createSignedUrl(p, 120);
+              if (data) links.push(`<a href="${data.signedUrl}" target="_blank" rel="noopener" title="${esc(fileLabel(p))}">📎 View${pics.length > 1 ? " " + (k + 1) : ""}</a>`);
             }
+            const link = links.length ? links.join(" · ") : "—";
             return `<tr><td>${i + 1}</td><td>${esc(ln.keterangan)}</td><td class="amount">${money(
               ln.amount, r.currency
             )}</td><td>${link}</td></tr>`;
@@ -5461,7 +5535,7 @@
       const { data, error } = await sb.storage.from(f.bucket).createSignedUrl(f.path, 120);
       if (error) link.textContent = "(attachment unavailable) ";
       else link.replaceWith(
-        el(`<a class="btn btn-ghost btn-sm" href="${data.signedUrl}" target="_blank" rel="noopener">${f.label}</a>`)
+        el(`<a class="btn btn-ghost btn-sm" href="${data.signedUrl}" target="_blank" rel="noopener" title="${esc(f.title || "")}">${f.label}</a>`)
       );
     }
 
@@ -5486,11 +5560,15 @@
         // it is the record of the transfer, so nothing else should own it
         const fixable = can("approval");
         // one slip per transfer: an invoice paid in instalments has several
-        const slipUrl = {};
+        const slipUrl = {}; // batch id → every slip's signed url
         await Promise.all(
-          Object.values(bMap).filter((b) => b.proof_path).map(async (b) => {
-            const { data: su } = await sb.storage.from("payment-proofs").createSignedUrl(b.proof_path, 300);
-            if (su) slipUrl[b.id] = su.signedUrl;
+          Object.values(bMap).filter((b) => filesOf(b, "proof_path").length).map(async (b) => {
+            const urls = [];
+            for (const p of filesOf(b, "proof_path")) {
+              const { data: su } = await sb.storage.from("payment-proofs").createSignedUrl(p, 300);
+              if (su) urls.push(su.signedUrl);
+            }
+            if (urls.length) slipUrl[b.id] = urls;
           })
         );
         const anySlip = Object.keys(slipUrl).length > 0;
@@ -5502,7 +5580,11 @@
               <td>${esc(b.bank_ref || "—")}</td>
               <td class="amount">${money(a.amount, r.currency)}</td>${
                 anySlip
-                  ? `<td>${slipUrl[a.batch_id] ? `<a href="${slipUrl[a.batch_id]}" target="_blank" rel="noopener">🧾 Slip</a>` : "—"}</td>`
+                  ? `<td>${
+                      slipUrl[a.batch_id]
+                        ? slipUrl[a.batch_id].map((u, k, all) => `<a href="${u}" target="_blank" rel="noopener">🧾 Slip${all.length > 1 ? " " + (k + 1) : ""}</a>`).join(" · ")
+                        : "—"
+                    }</td>`
                   : ""
               }${
                 fixable
@@ -5552,9 +5634,12 @@
           fix.addEventListener("click", () => openEditBatch(bt));
           slot2.append(fix);
         }
-        if (bt.proof_path && !slipsInHistory) {
-          const { data: pu } = await sb.storage.from("payment-proofs").createSignedUrl(bt.proof_path, 120);
-          if (pu) slot2.append(el(`<a class="btn btn-ghost btn-sm" href="${pu.signedUrl}" target="_blank" rel="noopener">🧾 View payment slip</a>`));
+        const slips = slipsInHistory ? [] : filesOf(bt, "proof_path");
+        for (const [k, p] of slips.entries()) {
+          const { data: pu } = await sb.storage.from("payment-proofs").createSignedUrl(p, 120);
+          if (pu) slot2.append(el(`<a class="btn btn-ghost btn-sm" href="${pu.signedUrl}" target="_blank" rel="noopener">${
+            slips.length > 1 ? `🧾 Payment slip ${k + 1} of ${slips.length}` : "🧾 View payment slip"
+          }</a>`));
         }
       }
     }
@@ -5766,9 +5851,10 @@
           <div class="full">
             <label>Transfer proof (bukti transfer)</label>
             <label class="file-drop">
-              <input type="file" name="proof" accept="image/*,.pdf" />
-              <span id="proof-label">📎 Click to attach the transfer receipt</span>
+              <input type="file" name="proof" multiple accept="image/*,.pdf" />
+              <span id="proof-label">📎 Click to attach the transfer receipts</span>
             </label>
+            <div class="file-list" id="proof-list"></div>
             <button type="button" class="btn btn-ghost btn-sm hidden" id="proof-verify" style="margin-top:8px">✨ Verify receipt against the fields</button>
             <div id="verify-box" class="verify-box hidden"></div>
           </div>
@@ -5784,12 +5870,11 @@
 
     const fileInput = card.querySelector("input[name=proof]");
     const verifyBtn = card.querySelector("#proof-verify");
-    fileInput.addEventListener("change", () => {
-      const f = fileInput.files[0];
-      card.querySelector("#proof-label").innerHTML = f
-        ? '<span class="file-name">📎 ' + esc(f.name) + "</span> — click to change"
-        : "📎 Click to attach the transfer receipt";
-      verifyBtn.classList.toggle("hidden", !f);
+    wireMultiFile(fileInput, card.querySelector("#proof-label"), card.querySelector("#proof-list"), "📎 Click to attach the transfer receipts", {
+      onChange: (files) => {
+        verifyBtn.classList.toggle("hidden", !files.length);
+        verifyBtn.textContent = files.length > 1 ? "✨ Verify the first receipt against the fields" : "✨ Verify receipt against the fields";
+      },
     });
     // keep "amount transferred" in step with what is being applied per invoice
     const amountInput = card.querySelector("input[name=amount]");
@@ -5800,8 +5885,8 @@
     };
     $$(".alloc-amt", card).forEach((i) => i.addEventListener("input", syncAllocTotal));
 
-    verifyBtn.addEventListener("click", () => verifyPaymentProof(card, fileInput.files[0], items));
-    card.querySelector("#pay-save").addEventListener("click", () => savePayment(card, items, fileInput.files[0]));
+    verifyBtn.addEventListener("click", () => verifyPaymentProof(card, pickedFiles(fileInput)[0], items));
+    card.querySelector("#pay-save").addEventListener("click", () => savePayment(card, items, pickedFiles(fileInput)));
   }
 
   async function verifyPaymentProof(card, file, items) {
@@ -5987,7 +6072,7 @@
     return true;
   }
 
-  async function savePayment(card, items, file) {
+  async function savePayment(card, items, files) {
     const msg = card.querySelector("#pay-msg");
     const saveBtn = card.querySelector("#pay-save");
     const paidDate = card.querySelector("input[name=paid_date]").value;
@@ -6005,19 +6090,14 @@
       msg.className = "msg error";
       return;
     }
-    if (file && file.size > 10 * 1024 * 1024) { msg.textContent = "Proof file is over 10 MB."; msg.className = "msg error"; return; }
+    const big = oversized(files);
+    if (big) { msg.textContent = `"${big.name}" is over 10 MB.`; msg.className = "msg error"; return; }
 
     saveBtn.disabled = true;
     msg.className = "msg"; msg.textContent = "Saving payment…";
 
     try {
-      let proofPath = null;
-      if (file) {
-        const safe = file.name.replace(/[^\w.\-]+/g, "_").slice(-50);
-        proofPath = `${state.user.id}/${Date.now()}-${safe}`;
-        const up = await sb.storage.from("payment-proofs").upload(proofPath, file, { upsert: false });
-        if (up.error) throw up.error;
-      }
+      const proofPaths = await uploadAll("payment-proofs", files);
 
       const { data: batch, error: bErr } = await sb
         .from("disbursement_batches")
@@ -6029,7 +6109,8 @@
           bank_ref: bankRef || null,
           fees: feesVal || null,
           note: note || null,
-          proof_path: proofPath,
+          proof_path: proofPaths[0] || null,
+          proof_paths: proofPaths.length ? proofPaths : null,
           verification: card._verification || null,
         })
         .select()
