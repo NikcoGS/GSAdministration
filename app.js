@@ -6240,12 +6240,13 @@
         toast("Paid, but repricing failed: " + (rpErr.message || rpErr), "error");
       }
 
-      // file the transfer proof in Drive and refresh the sheet (best effort)
-      if (file) {
+      // file the transfer proof(s) in Drive and refresh the sheet (best effort)
+      const refs = items.map((it) => it.r.ref_number).filter(Boolean).join(", ");
+      files.forEach((file, i) => {
         const ext = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".")) : "";
-        const refs = items.map((it) => it.r.ref_number).filter(Boolean).join(", ");
-        syncFileToDrive(file, `${paidDate} - payment proof${refs ? " - " + safeName(refs) : ""}${bankRef ? " - " + safeName(bankRef) : ""}${ext}`);
-      }
+        const nth = i ? ` ${i + 1}` : "";
+        syncFileToDrive(file, `${paidDate} - payment proof${nth}${refs ? " - " + safeName(refs) : ""}${bankRef ? " - " + safeName(bankRef) : ""}${ext}`);
+      });
       state.purchAll = null; state.expAll = null; // purchasing book must reload
       syncToGoogleSheet({ silent: true });
 
