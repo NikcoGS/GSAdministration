@@ -3816,6 +3816,15 @@
           <div id="ed-lines"></div>
           <button type="button" class="btn btn-ghost btn-sm" id="ed-add">+ Add line</button>
 
+          <div class="ln4-head" style="display:block;grid-template-columns:none">Attachments</div>
+          <div class="file-list" id="ed-have"></div>
+          <p class="hint" id="ed-have-none" hidden>No files attached yet.</p>
+          <label class="file-drop" id="ed-drop" style="margin-top:8px">
+            <input type="file" name="invoice_more" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif" />
+            <span id="ed-file-label">📎 Click to add PDFs or images (max 10&nbsp;MB each)</span>
+          </label>
+          <div class="file-list" id="ed-file-list"></div>
+
           ${
             r.paid_at
               ? `<p class="hint" style="margin-top:12px">💸 Paid ${fmtDate(r.paid_at)}${
@@ -3885,6 +3894,42 @@
     items.forEach(addLine);
     card.querySelector("#ed-add").addEventListener("click", () => addLine());
 
+    // Attachments: the files already on the request (storage, then the
+    // Drive-only documents of historical imports) and a picker for more.
+    // Nothing is removed here — only added.
+    const haveBox = card.querySelector("#ed-have");
+    const havePaths = filesOf(r, "invoice_path");
+    const driveDocs = Array.isArray(r.drive_invoice_files) ? r.drive_invoice_files : [];
+    card.querySelector("#ed-have-none").hidden = havePaths.length + driveDocs.length > 0;
+    havePaths.forEach((p) => {
+      const label = fileLabel(p);
+      const chip = el(`<div class="file-chip">
+        <span class="file-ico">${/\.pdf$/i.test(p) ? "📄" : "📎"}</span>
+        <span class="file-chip-name" title="${esc(label)}">${esc(label)}</span>
+        <span class="file-chip-size">…</span>
+      </div>`);
+      haveBox.append(chip);
+      sb.storage.from("invoices").createSignedUrl(p, 120).then(({ data, error }) => {
+        const slot = chip.querySelector(".file-chip-size");
+        if (error || !data) { slot.textContent = "(unavailable)"; return; }
+        slot.replaceWith(el(`<a href="${data.signedUrl}" target="_blank" rel="noopener" style="font-weight:600;white-space:nowrap">View</a>`));
+      });
+    });
+    driveDocs.forEach((d) => {
+      const name = d.name || "Document";
+      const label = name.length > 34 ? name.slice(0, 32) + "…" : name;
+      haveBox.append(
+        el(`<div class="file-chip" title="Kept in Google Drive">
+          <span class="file-ico">📄</span>
+          <span class="file-chip-name" title="${esc(name)}">${esc(label)}</span>
+          <span class="file-chip-size">Drive</span>
+          <a href="${esc(d.url || "#")}" target="_blank" rel="noopener" style="font-weight:600;white-space:nowrap">View</a>
+        </div>`)
+      );
+    });
+    const moreInput = card.querySelector("#ed-drop input[type=file]");
+    wireMultiFile(moreInput, card.querySelector("#ed-file-label"), card.querySelector("#ed-file-list"), "📎 Click to add PDFs or images (max 10&nbsp;MB each)");
+
     card.querySelector("#ed-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const msg = card.querySelector("#ed-msg");
@@ -3895,6 +3940,9 @@
       if (!payee) { msg.textContent = "The supplier / payee name cannot be empty."; msg.className = "msg error"; return; }
       const amount = Number(val("amount"));
       if (Number.isNaN(amount) || amount < 0) { msg.textContent = "Enter a valid invoice total."; msg.className = "msg error"; return; }
+      const moreFiles = pickedFiles(moreInput);
+      const big = oversized(moreFiles);
+      if (big) { msg.textContent = `"${big.name}" is larger than 10 MB.`; msg.className = "msg error"; return; }
 
       const newItems = [];
       for (const row of $$(".ed-line", card)) {
@@ -3930,6 +3978,21 @@
         description: val("description") || null,
         items: newItems.length ? withLandedCost(newItems, r.charges) : null,
       };
+
+      if (moreFiles.length) {
+        msg.className = "msg";
+        msg.textContent = `Uploading ${moreFiles.length} file${moreFiles.length === 1 ? "" : "s"}…`;
+        let added;
+        try {
+          added = await uploadAll("invoices", moreFiles);
+        } catch (err) {
+          msg.textContent = friendlyError(err); msg.className = "msg error"; return;
+        }
+        // the first file stays in invoice_path, the whole list in invoice_paths
+        const all = [...havePaths, ...added];
+        patch.invoice_paths = all;
+        if (!r.invoice_path) patch.invoice_path = all[0];
+      }
 
       msg.className = "msg"; msg.textContent = "Saving…";
       const { error } = await sb.from("payment_requests").update(patch).eq("id", r.id);
