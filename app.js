@@ -3693,9 +3693,22 @@
       const rateOf = {};
       const skipped = [];
       const liveRates = {};
+      // the invoices a transfer pays, named so a skipped line can be found:
+      // "INV-123 · Acme Golf", at most four, then "+ n more"
+      const invoicesOf = (id) => {
+        const seen = new Set();
+        const names = allocs
+          .filter((a) => a.batch_id === id && byId[a.payment_request_id] && !seen.has(a.payment_request_id) && seen.add(a.payment_request_id))
+          .map((a) => {
+            const r = byId[a.payment_request_id];
+            return `${r.ref_number || r.title || "invoice"} · ${r.payee_name || "no vendor"}`;
+          });
+        return names.length > 4 ? [...names.slice(0, 4), `+ ${names.length - 4} more`] : names;
+      };
       for (const id of batchIds) {
         const b = batchMap[id];
-        const label = b && b.paid_date ? fmtDate(b.paid_date) : "a payment";
+        const inv = invoicesOf(id);
+        const label = (b && b.paid_date ? fmtDate(b.paid_date) : "a payment") + (inv.length ? ` — ${inv.join(", ")}` : "");
         if (!b || !(Number(b.amount) > 0)) { skipped.push(`${label}: no amount recorded on the transfer`); continue; }
         if ((b.currency || "IDR") !== "IDR") {
           skipped.push(`${label}: the transfer itself is in ${b.currency}, so it holds no rupiah figure`);
