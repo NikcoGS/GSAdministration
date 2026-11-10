@@ -4275,8 +4275,9 @@
     toast(`Exported ${rows.length} item(s)${linesCsv.length > 1 ? ` and ${linesCsv.length - 1} petty cash line(s)` : ""} ✔`);
   }
 
-  // A printable report of the filtered list: totals by type, by person and by
-  // month, then the lines — the page an accountant or a director reads.
+  // A printable report of the filtered list: totals by type, by person, by
+  // month and by payment, then the lines — the page an accountant or a
+  // director reads.
   function printExpenseReport(rows) {
     if (!rows.length) { toast("Nothing to report", "error"); return; }
     const company = cfg.COMPANY_NAME || "Company";
@@ -4296,7 +4297,7 @@
       const m = new Map();
       rows.forEach((it) => {
         const k = keyOf(it);
-        const g = m.get(k) || { label: labelOf(it), n: 0, idr: 0, unknown: 0 };
+        const g = m.get(k) || { key: k, label: labelOf(it), n: 0, idr: 0, unknown: 0 };
         g.n++; if (it.idr == null) g.unknown++; else g.idr += it.idr;
         m.set(k, g);
       });
@@ -4307,6 +4308,25 @@
     const byMonth = group((it) => (it.date || "").slice(0, 7), (it) =>
       it.date ? new Date(it.date + "T12:00:00").toLocaleDateString("en-GB", { month: "long", year: "numeric" }) : "undated"
     ).sort((a, b) => a.label.localeCompare(b.label));
+    // By payment: one row per payment batch (one "Mark paid" action — a
+    // transfer), oldest first, so the report can be ticked off against the
+    // bank statement. Items paid before batches existed group by their paid
+    // date; items not paid yet come last.
+    const byPayment = group(
+      (it) => (it.state !== "paid" ? "~unpaid" : `${it.paidOn || ""}|${it.r.batch_id || ""}`),
+      (it) =>
+        it.state !== "paid"
+          ? "Not yet paid"
+          : `Paid ${it.paidOn ? fmtDate(it.paidOn) : "(date not recorded)"}${it.batch && it.batch.bank_ref ? " · ref " + it.batch.bank_ref : ""}`
+    ).sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    // two payments on one day with no reference would read the same — number them
+    const sameLabel = {};
+    byPayment.forEach((g) => (sameLabel[g.label] = (sameLabel[g.label] || 0) + 1));
+    const nth = {};
+    byPayment.forEach((g) => {
+      const base = g.label;
+      if (sameLabel[base] > 1) { nth[base] = (nth[base] || 0) + 1; g.label = `${base} · payment ${nth[base]}`; }
+    });
     const total = rows.reduce((s, it) => s + (it.idr || 0), 0);
     const unknown = rows.filter((it) => it.idr == null).length;
 
@@ -4358,6 +4378,7 @@
       ${sumTable("By type", byType)}
       ${sumTable("By requester", byWho)}
       ${sumTable("By month", byMonth)}
+      ${sumTable("By payment", byPayment)}
       <h2>Lines</h2>
       <table>
         <thead><tr><th>Date</th><th>Type</th><th>Requester</th><th>Description</th><th class="r">Amount</th><th>Status</th><th>Paid</th></tr></thead>
